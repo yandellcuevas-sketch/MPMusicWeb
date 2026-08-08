@@ -35,6 +35,9 @@ const App: React.FC = () => {
   const [playingTrack, setPlayingTrack] = useState<PreviewTrack | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
 
+  // Preselected IDs passed from Artists tab for USB export
+  const [usbPreselectedIds, setUsbPreselectedIds] = useState<string[] | undefined>(undefined);
+
   // Initialize Dexie default settings
   useEffect(() => {
     initializeSettings();
@@ -48,6 +51,20 @@ const App: React.FC = () => {
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 4000);
+  };
+
+  /** Navigate to a tab. Intercepts usb tab to pick up preselected IDs from localStorage. */
+  const handleNavigate = (tab: string) => {
+    if (tab === 'usb') {
+      const raw = localStorage.getItem('usb_export_selected_ids');
+      if (raw) {
+        try { setUsbPreselectedIds(JSON.parse(raw)); } catch { setUsbPreselectedIds(undefined); }
+        localStorage.removeItem('usb_export_selected_ids');
+      } else {
+        setUsbPreselectedIds(undefined);
+      }
+    }
+    setActiveTab(tab);
   };
 
   const handlePlayPreview = (track: PreviewTrack) => {
@@ -102,7 +119,7 @@ const App: React.FC = () => {
           />
         );
       case 'usb':
-        return <UsbTab showToast={showToast} />;
+        return <UsbTab showToast={showToast} preselectedIds={usbPreselectedIds} />;
       case 'history':
         return <HistoryTab showToast={showToast} />;
       case 'settings':
@@ -126,7 +143,7 @@ const App: React.FC = () => {
       </div>
 
       {/* Main layout sidebar navigation */}
-      <Sidebar activeTab={activeTab} onNavigate={setActiveTab} />
+      <Sidebar activeTab={activeTab} onNavigate={handleNavigate} />
 
       {/* Main view container */}
       <div className="main-layout">

@@ -12,6 +12,19 @@ interface ProcessTabProps {
 export const ProcessTab: React.FC<ProcessTabProps> = ({ showToast }) => {
   const items = useLiveQuery(() => db.cart.orderBy('addedAt').toArray()) || [];
   const [concurrency, setConcurrency] = useState(2);
+  const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
+
+  // On mount: if ArtistsTab navigated here with specific IDs, auto-highlight them
+  useEffect(() => {
+    const raw = localStorage.getItem('process_selected_ids');
+    if (raw) {
+      try {
+        const ids: string[] = JSON.parse(raw);
+        setHighlightedIds(ids);
+      } catch { /* ignore */ }
+      localStorage.removeItem('process_selected_ids');
+    }
+  }, []);
 
   // Sync settings concurrency
   useEffect(() => {
@@ -129,7 +142,25 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({ showToast }) => {
           <p style={{ color: 'var(--text-secondary)' }}>Transcode audio files and write tags client-side using WebAssembly.</p>
         </div>
 
+        {/* Selection highlight banner from Artists tab */}
+        {highlightedIds.length > 0 && (
+          <div style={{
+            fontSize: '13px', padding: '8px 14px', borderRadius: '8px',
+            backgroundColor: 'var(--accent-muted)', color: 'var(--accent)',
+            border: '1px solid rgba(204,255,0,0.25)',
+          }}>
+            {highlightedIds.length} tracks queued from Artists — highlighted below.
+            <button
+              style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', marginLeft: '10px', fontSize: '11px', textDecoration: 'underline' }}
+              onClick={() => setHighlightedIds([])}
+            >
+              Clear
+            </button>
+          </div>
+        )}
+
         {items.length > 0 && (
+
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             {/* Concurrency Selector */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginRight: '8px' }}>
@@ -197,8 +228,9 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({ showToast }) => {
                 flexDirection: 'column',
                 padding: '14px 18px',
                 borderRadius: '8px',
-                backgroundColor: 'var(--bg-card)',
-                border: '1px solid var(--border-subtle)'
+                backgroundColor: highlightedIds.includes(item.id) ? 'rgba(204,255,0,0.04)' : 'var(--bg-card)',
+                border: `1px solid ${highlightedIds.includes(item.id) ? 'rgba(204,255,0,0.2)' : 'var(--border-subtle)'}`,
+                transition: 'border-color 0.2s ease',
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>

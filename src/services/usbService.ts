@@ -154,23 +154,14 @@ export class UsbService {
     }
   }
 
-  /**
-   * Triggers a fallback zip bundle download using the browser dynamic anchor trigger.
-   */
-  async exportAsZipFallback(_items: CartItem[]): Promise<Blob> {
-    // Note: We avoid embedding huge multi-MB compression scripts (like JSZip)
-    // in RAM directly without limit. In modern PWA apps, we can construct
-    // a basic ZIP structure or download files sequentially.
-    // Here we will mock/provide a simple Blob concat for demo or import a light helper.
-    // To stay reliable and local-first, we warn the user in the UI, and if they request
-    // download fallback, we can let them download individual files sequentially or
-    // package them. Downloading files sequentially (by creating a dynamic <a> link and clicking it for each file)
-    // is the most reliable, memory-efficient way to handle mult-GB exports in unsupported browsers
-    // because it completely bypasses RAM compression limitations!
-    
-    // We will provide a download trigger in the UI that triggers downloads one-by-one.
-    return new Blob(['Sequential triggers preferred to save RAM'], { type: 'text/plain' });
-  }
 }
 
 export const usbService = new UsbService();
+
+/**
+ * Browser fallback for unsupported environments:
+ * Sequential per-file downloads via <a download> anchor triggers.
+ * See: src/services/sequentialDownloadService.ts
+ */
+export { downloadSequentially } from './sequentialDownloadService';
+

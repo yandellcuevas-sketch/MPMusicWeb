@@ -1,12 +1,12 @@
 import React, { useState, useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/database';
-import type { CartItem } from '../db/database';
+import type { CartItem, Playlist } from '../db/database';
 import { cartService } from '../services/cartService';
-import { getArtistSummary, formatDuration, getArtistInitials, getArtistHue } from '../utils/artistUtils';
+import { normalizeArtist, getArtistSummary, formatDuration, getArtistInitials, getArtistHue } from '../utils/artistUtils';
 import {
   Users, ArrowLeft, Music, Trash2, Edit3,
-  CheckSquare, Layers, Play, ArrowRight, X
+  CheckSquare, Layers, Play, ArrowRight, X, HardDrive, ListMusic, Plus
 } from 'lucide-react';
 
 interface ArtistsTabProps {
@@ -15,7 +15,7 @@ interface ArtistsTabProps {
   showToast: (message: string, type: 'success' | 'info' | 'error') => void;
 }
 
-// ─── Artist Avatar ────────────────────────────────────────────────────────────
+// ─── Avatar ───────────────────────────────────────────────────────────────────
 const ArtistAvatar: React.FC<{ name: string; thumbnailUrl?: string; size?: number }> = ({
   name,
   thumbnailUrl,
@@ -29,13 +29,7 @@ const ArtistAvatar: React.FC<{ name: string; thumbnailUrl?: string; size?: numbe
       <img
         src={thumbnailUrl}
         alt={name}
-        style={{
-          width: size,
-          height: size,
-          borderRadius: '50%',
-          objectFit: 'cover',
-          flexShrink: 0,
-        }}
+        style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
       />
     );
   }
@@ -43,20 +37,12 @@ const ArtistAvatar: React.FC<{ name: string; thumbnailUrl?: string; size?: numbe
   return (
     <div
       style={{
-        width: size,
-        height: size,
-        borderRadius: '50%',
-        flexShrink: 0,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        width: size, height: size, borderRadius: '50%', flexShrink: 0,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
         background: `linear-gradient(135deg, hsl(${hue}, 60%, 28%), hsl(${(hue + 40) % 360}, 50%, 18%))`,
         border: `2px solid hsl(${hue}, 50%, 35%)`,
-        fontSize: size > 40 ? '18px' : '13px',
-        fontWeight: '700',
-        color: `hsl(${hue}, 80%, 85%)`,
-        letterSpacing: '1px',
-        userSelect: 'none',
+        fontSize: size > 40 ? '18px' : '13px', fontWeight: '700',
+        color: `hsl(${hue}, 80%, 85%)`, letterSpacing: '1px', userSelect: 'none',
       }}
     >
       {initials}
@@ -74,34 +60,14 @@ interface ArtistCardProps {
 }
 
 const ArtistCard: React.FC<ArtistCardProps> = ({ displayName, count, totalDuration, thumbnailUrl, onClick }) => {
-  const hue = getArtistHue(displayName);
-
   return (
     <div
       onClick={onClick}
       className="artist-card"
       style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: '12px',
-        padding: '24px 16px',
-        borderRadius: '12px',
-        backgroundColor: 'var(--bg-card)',
-        border: '1px solid var(--border-subtle)',
-        cursor: 'pointer',
-        transition: 'var(--transition-fast)',
-        textAlign: 'center',
-      }}
-      onMouseEnter={(e) => {
-        (e.currentTarget as HTMLDivElement).style.borderColor = `hsl(${hue}, 50%, 40%)`;
-        (e.currentTarget as HTMLDivElement).style.backgroundColor = 'var(--bg-hover)';
-        (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-2px)';
-      }}
-      onMouseLeave={(e) => {
-        (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-subtle)';
-        (e.currentTarget as HTMLDivElement).style.backgroundColor = 'var(--bg-card)';
-        (e.currentTarget as HTMLDivElement).style.transform = 'translateY(0)';
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px',
+        padding: '24px 16px', borderRadius: '12px', backgroundColor: 'var(--bg-card)',
+        border: '1px solid var(--border-subtle)', cursor: 'pointer', textAlign: 'center',
       }}
     >
       <ArtistAvatar name={displayName} thumbnailUrl={thumbnailUrl} size={72} />
@@ -120,9 +86,87 @@ const ArtistCard: React.FC<ArtistCardProps> = ({ displayName, count, totalDurati
   );
 };
 
+// ─── Add to Playlist modal ────────────────────────────────────────────────────
+interface PlaylistPickerProps {
+  playlists: Playlist[];
+  onSelect: (playlistId: string) => void;
+  onCreateAndAdd: (name: string) => void;
+  onClose: () => void;
+}
+
+const PlaylistPicker: React.FC<PlaylistPickerProps> = ({ playlists, onSelect, onCreateAndAdd, onClose }) => {
+  const [newName, setNewName] = useState('');
+
+  return (
+    <div style={{
+      position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+      backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center',
+      justifyContent: 'center', zIndex: 1000, padding: '20px',
+    }}>
+      <div className="card" style={{ maxWidth: '380px', width: '100%' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+          <h3 style={{ margin: 0 }}>Add to Playlist</h3>
+          <button style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }} onClick={onClose}>
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Existing playlists */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '220px', overflowY: 'auto', marginBottom: '16px' }}>
+          {playlists.length === 0 && (
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)', textAlign: 'center', padding: '16px' }}>
+              No playlists yet. Create one below.
+            </p>
+          )}
+          {playlists.map((pl) => (
+            <button
+              key={pl.id}
+              className="btn btn-secondary"
+              style={{ justifyContent: 'flex-start', gap: '8px', textAlign: 'left' }}
+              onClick={() => onSelect(pl.id)}
+            >
+              <ListMusic size={14} />
+              {pl.name}
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                {pl.itemIds.length} tracks
+              </span>
+            </button>
+          ))}
+        </div>
+
+        {/* Create new */}
+        <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '14px' }}>
+          <label style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>
+            Create new playlist & add
+          </label>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <input
+              type="text"
+              className="input"
+              placeholder="Playlist name…"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && newName.trim()) { onCreateAndAdd(newName.trim()); } }}
+            />
+            <button
+              className="btn btn-primary btn-icon-only"
+              disabled={!newName.trim()}
+              onClick={() => onCreateAndAdd(newName.trim())}
+              title="Create and add"
+            >
+              <Plus size={15} />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ─── Main Tab ─────────────────────────────────────────────────────────────────
 export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPreview, showToast }) => {
   const allItems = useLiveQuery(() => db.cart.orderBy('addedAt').toArray()) || [];
+  const playlists = useLiveQuery(() => db.playlists.toArray()) || [];
 
   const [activeArtistKey, setActiveArtistKey] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -131,29 +175,26 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
   const [bulkFormat, setBulkFormat] = useState<'mp3' | 'wav' | 'flac' | 'm4a' | 'mp4'>('mp3');
   const [bulkQuality, setBulkQuality] = useState<'128' | '192' | '256' | '320'>('320');
   const [showBulkPanel, setShowBulkPanel] = useState(false);
+  const [showPlaylistPicker, setShowPlaylistPicker] = useState(false);
 
-  // Build artist summaries
   const artistSummaries = useMemo(() => getArtistSummary(allItems), [allItems]);
 
-  // Filter artist list by search
   const filteredArtists = useMemo(() => {
     if (!searchQuery.trim()) return artistSummaries;
     const q = searchQuery.toLowerCase();
     return artistSummaries.filter((a) => a.displayName.toLowerCase().includes(q));
   }, [artistSummaries, searchQuery]);
 
-  // Active artist tracks
   const activeArtistData = useMemo(() => {
     if (!activeArtistKey) return null;
     const summary = artistSummaries.find((a) => a.key === activeArtistKey);
     if (!summary) return null;
     const tracks = allItems.filter(
-      (item) => (item.artistNormalized || item.artist.toLowerCase().trim()) === activeArtistKey
+      (item) => normalizeArtist(item.artist) === activeArtistKey
     );
     return { ...summary, tracks };
   }, [activeArtistKey, artistSummaries, allItems]);
 
-  // Per-artist stats
   const artistStats = useMemo(() => {
     if (!activeArtistData) return null;
     const { tracks } = activeArtistData;
@@ -212,6 +253,113 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
     }
   };
 
+  /**
+   * Process selected IDs only.
+   * Stores the selection in localStorage so ProcessTab can pick it up and
+   * reset only those items to pending. Then navigates to Queue.
+   */
+  const handleProcessSelected = async () => {
+    if (selectedIds.length === 0) return;
+
+    // Reset only selected items to pending (local + youtube with sourceUrl)
+    const idsToProcess = selectedIds.filter((id) => {
+      const item = allItems.find((i) => i.id === id);
+      if (!item) return false;
+      // Skip YouTube items without a direct stream URL — they can't be processed
+      if (item.source === 'youtube' && !item.sourceUrl) return false;
+      return true;
+    });
+
+    if (idsToProcess.length === 0) {
+      showToast('None of the selected tracks can be processed (no local file or direct URL).', 'error');
+      return;
+    }
+
+    await db.transaction('rw', db.cart, async () => {
+      for (const id of idsToProcess) {
+        await db.cart.update(id, { status: 'pending', progress: 0, errorMessage: undefined });
+      }
+    });
+
+    // Signal ProcessTab to start immediately with these items
+    localStorage.setItem('process_selected_ids', JSON.stringify(idsToProcess));
+    showToast(`Queued ${idsToProcess.length} tracks for processing.`, 'info');
+    onNavigate('process');
+  };
+
+  /**
+   * Export selected IDs.
+   * Stores selectedIds in localStorage so UsbTab's preselectedIds is populated.
+   */
+  const handleExportSelected = () => {
+    if (selectedIds.length === 0) return;
+
+    const readySelected = selectedIds.filter((id) => {
+      const item = allItems.find((i) => i.id === id);
+      return item?.status === 'ready';
+    });
+
+    if (readySelected.length === 0) {
+      showToast('None of the selected tracks are ready. Process them first.', 'error');
+      return;
+    }
+
+    localStorage.setItem('usb_export_selected_ids', JSON.stringify(readySelected));
+    showToast(`Sending ${readySelected.length} tracks to USB Export.`, 'info');
+    onNavigate('usb');
+  };
+
+  /**
+   * Add selectedIds to an existing playlist.
+   * Avoids duplicates within the playlist.
+   */
+  const handleAddToExistingPlaylist = async (playlistId: string) => {
+    if (selectedIds.length === 0) return;
+    const pl = playlists.find((p) => p.id === playlistId);
+    if (!pl) return;
+
+    try {
+      const newItemIds = [...pl.itemIds];
+      let added = 0;
+      for (const id of selectedIds) {
+        if (!newItemIds.includes(id)) {
+          newItemIds.push(id);
+          added++;
+        }
+      }
+      await db.playlists.update(playlistId, { itemIds: newItemIds });
+      showToast(
+        added > 0
+          ? `Added ${added} tracks to "${pl.name}".`
+          : `All selected tracks are already in "${pl.name}".`,
+        added > 0 ? 'success' : 'info'
+      );
+      setShowPlaylistPicker(false);
+    } catch {
+      showToast('Failed to add to playlist.', 'error');
+    }
+  };
+
+  /**
+   * Create a new playlist and add selectedIds to it.
+   */
+  const handleCreateAndAddPlaylist = async (name: string) => {
+    if (selectedIds.length === 0 || !name.trim()) return;
+    try {
+      const id = `pl_${Math.random().toString(36).substring(7)}_${Date.now()}`;
+      await db.playlists.put({
+        id,
+        name: name.trim(),
+        createdAt: Date.now(),
+        itemIds: [...selectedIds],
+      });
+      showToast(`Created playlist "${name}" with ${selectedIds.length} tracks.`, 'success');
+      setShowPlaylistPicker(false);
+    } catch {
+      showToast('Failed to create playlist.', 'error');
+    }
+  };
+
   const saveMetadataEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingItem) return;
@@ -219,7 +367,8 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
       await db.cart.update(editingItem.id, {
         title: editingItem.title,
         artist: editingItem.artist,
-        artistNormalized: editingItem.artist.toLowerCase().trim().replace(/\s+/g, ' '),
+        // Use the shared normalizeArtist utility — single source of truth
+        artistNormalized: normalizeArtist(editingItem.artist),
         album: editingItem.album,
         year: editingItem.year,
         genre: editingItem.genre,
@@ -248,11 +397,10 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
     pending: 'var(--text-muted)',
   };
 
-  // ── Artists grid view ──────────────────────────────────────────────────────
+  // ── Grid view ──────────────────────────────────────────────────────────────
   if (!activeArtistKey) {
     return (
       <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-        {/* Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '12px' }}>
           <div>
             <h1 style={{ margin: 0 }}>Artists</h1>
@@ -280,21 +428,10 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
             </button>
           </div>
         ) : (
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
-              gap: '16px',
-              overflowY: 'auto',
-              paddingBottom: '32px',
-            }}
-          >
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '16px', overflowY: 'auto', paddingBottom: '32px' }}>
             {filteredArtists.map((artist) => {
-              // Pick thumbnail from first track that has one
               const thumb = allItems.find(
-                (item) =>
-                  (item.artistNormalized || item.artist.toLowerCase().trim()) === artist.key &&
-                  item.thumbnailUrl
+                (item) => normalizeArtist(item.artist) === artist.key && item.thumbnailUrl
               )?.thumbnailUrl;
 
               return (
@@ -304,10 +441,7 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
                   count={artist.count}
                   totalDuration={artist.totalDuration}
                   thumbnailUrl={thumb}
-                  onClick={() => {
-                    setActiveArtistKey(artist.key);
-                    setSelectedIds([]);
-                  }}
+                  onClick={() => { setActiveArtistKey(artist.key); setSelectedIds([]); }}
                 />
               );
             })}
@@ -317,20 +451,19 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
     );
   }
 
-  // ── Artist detail view ──────────────────────────────────────────────────────
+  // ── Artist detail view ─────────────────────────────────────────────────────
   if (!activeArtistData) return null;
   const { displayName, tracks } = activeArtistData;
   const allSelected = selectedIds.length === tracks.length && tracks.length > 0;
-
   const thumb = tracks.find((t) => t.thumbnailUrl)?.thumbnailUrl;
 
   return (
     <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Back + header */}
-      <div style={{ marginBottom: '24px' }}>
+      <div style={{ marginBottom: '20px' }}>
         <button
           className="btn btn-secondary"
-          style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '6px' }}
+          style={{ marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '6px' }}
           onClick={() => { setActiveArtistKey(null); setSelectedIds([]); setShowBulkPanel(false); }}
         >
           <ArrowLeft size={14} /> All Artists
@@ -338,10 +471,10 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '20px', flexWrap: 'wrap' }}>
           <ArtistAvatar name={displayName} thumbnailUrl={thumb} size={80} />
-          <div>
-            <h1 style={{ margin: '0 0 4px', fontSize: '28px', fontWeight: '800' }}>{displayName}</h1>
+          <div style={{ flexGrow: 1, minWidth: 0 }}>
+            <h1 style={{ margin: '0 0 6px', fontSize: '26px', fontWeight: '800' }}>{displayName}</h1>
             {artistStats && (
-              <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
                 <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{artistStats.count} tracks</span>
                 <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{artistStats.duration}</span>
                 <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>~{artistStats.estimatedMB} MB</span>
@@ -352,23 +485,39 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
             )}
           </div>
 
-          {/* Action buttons */}
-          <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto', flexWrap: 'wrap' }}>
+          {/* Action bar */}
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', flexShrink: 0 }}>
             <button className="btn btn-secondary" onClick={toggleSelectAll}>
               {allSelected ? 'Deselect All' : `Select All ${tracks.length}`}
             </button>
+
             {selectedIds.length > 0 && (
               <>
+                <button className="btn btn-secondary" onClick={() => setShowBulkPanel(!showBulkPanel)} title="Format & quality">
+                  <Layers size={14} />
+                </button>
                 <button
                   className="btn btn-secondary"
-                  onClick={() => setShowBulkPanel(!showBulkPanel)}
+                  onClick={() => setShowPlaylistPicker(true)}
+                  title="Add to playlist"
                 >
-                  <Layers size={14} /> Bulk ({selectedIds.length})
+                  <ListMusic size={14} /> Playlist
                 </button>
-                <button className="btn btn-primary" onClick={() => { onNavigate('process'); }}>
-                  Process <ArrowRight size={14} />
+                <button
+                  className="btn btn-secondary"
+                  onClick={handleProcessSelected}
+                  title="Process selected tracks only"
+                >
+                  <ArrowRight size={14} /> Process {selectedIds.length}
                 </button>
-                <button className="btn btn-danger" onClick={deleteSelected}>
+                <button
+                  className="btn btn-secondary"
+                  onClick={handleExportSelected}
+                  title="Export selected ready tracks to USB"
+                >
+                  <HardDrive size={14} /> Export
+                </button>
+                <button className="btn btn-danger" onClick={deleteSelected} title="Delete selected">
                   <Trash2 size={14} />
                 </button>
               </>
@@ -377,9 +526,9 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
         </div>
       </div>
 
-      {/* Bulk panel */}
+      {/* Bulk format panel */}
       {showBulkPanel && selectedIds.length > 0 && (
-        <div className="card animate-slide-down" style={{ marginBottom: '16px', display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+        <div className="card animate-slide-down" style={{ marginBottom: '14px', display: 'flex', gap: '14px', alignItems: 'center', flexWrap: 'wrap', padding: '12px 16px' }}>
           <div>
             <label style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Format</label>
             <select className="input" style={{ width: '90px' }} value={bulkFormat} onChange={(e: any) => setBulkFormat(e.target.value)}>
@@ -401,7 +550,7 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
             </div>
           )}
           <button className="btn btn-primary" style={{ marginLeft: 'auto' }} onClick={applyBulkSettings}>
-            Apply to {selectedIds.length} tracks
+            Apply to {selectedIds.length}
           </button>
         </div>
       )}
@@ -414,15 +563,11 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
             <div
               key={item.id}
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                padding: '10px 14px',
-                borderRadius: '8px',
+                display: 'flex', alignItems: 'center', padding: '10px 14px', borderRadius: '8px',
                 backgroundColor: isSelected ? 'var(--accent-muted)' : 'var(--bg-card)',
                 border: '1px solid',
                 borderColor: isSelected ? 'rgba(204,255,0,0.25)' : 'var(--border-subtle)',
-                transition: 'var(--transition-fast)',
-                gap: '12px',
+                transition: 'var(--transition-fast)', gap: '12px',
               }}
             >
               {/* Index / checkbox */}
@@ -430,18 +575,17 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
                 style={{ width: '28px', textAlign: 'center', cursor: 'pointer', color: isSelected ? 'var(--accent)' : 'var(--text-muted)', flexShrink: 0 }}
                 onClick={() => toggleSelect(item.id)}
               >
-                {isSelected ? <CheckSquare size={16} /> : <span style={{ fontSize: '12px', fontFamily: 'var(--font-mono)' }}>{String(idx + 1).padStart(2, '0')}</span>}
+                {isSelected
+                  ? <CheckSquare size={16} />
+                  : <span style={{ fontSize: '12px', fontFamily: 'var(--font-mono)' }}>{String(idx + 1).padStart(2, '0')}</span>}
               </div>
 
               {/* Thumbnail */}
               <div style={{ width: '40px', height: '40px', borderRadius: '4px', overflow: 'hidden', backgroundColor: 'var(--bg-hover)', flexShrink: 0 }}>
-                {item.thumbnailUrl ? (
-                  <img src={item.thumbnailUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                ) : (
-                  <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-                    <Music size={14} />
-                  </div>
-                )}
+                {item.thumbnailUrl
+                  ? <img src={item.thumbnailUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}><Music size={14} /></div>
+                }
               </div>
 
               {/* Info */}
@@ -450,15 +594,13 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
                   {item.title}
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '1px' }}>
-                  {formatSec(item.duration)}
-                  {item.album && ` · ${item.album}`}
-                  {item.genre && ` · ${item.genre}`}
+                  {formatSec(item.duration)}{item.album && ` · ${item.album}`}{item.genre && ` · ${item.genre}`}
                 </div>
               </div>
 
               {/* Format + status */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-                <span style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                <span style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
                   {item.outputFormat.toUpperCase()}{['mp3', 'm4a'].includes(item.outputFormat) ? ` ${item.quality}k` : ''}
                 </span>
                 <span style={{ fontSize: '10px', color: statusColor[item.status] || 'var(--text-muted)', textTransform: 'uppercase', fontWeight: '600' }}>
@@ -469,15 +611,12 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
               {/* Actions */}
               <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
                 {item.sourceUrl && (
-                  <button
-                    className="btn btn-secondary btn-icon-only"
-                    title="Preview"
-                    onClick={() => onPlayPreview({ id: item.id, title: item.title, artist: item.artist, thumbnailUrl: item.thumbnailUrl || '', previewUrl: item.sourceUrl! })}
-                  >
+                  <button className="btn btn-secondary btn-icon-only" title="Preview"
+                    onClick={() => onPlayPreview({ id: item.id, title: item.title, artist: item.artist, thumbnailUrl: item.thumbnailUrl || '', previewUrl: item.sourceUrl! })}>
                     <Play size={12} />
                   </button>
                 )}
-                <button className="btn btn-secondary btn-icon-only" title="Edit metadata" onClick={() => setEditingItem(item)}>
+                <button className="btn btn-secondary btn-icon-only" title="Edit" onClick={() => setEditingItem(item)}>
                   <Edit3 size={12} />
                 </button>
                 <button className="btn btn-secondary btn-icon-only" title="Remove" onClick={() => cartService.removeFromCart(item.id)}>
@@ -488,6 +627,16 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
           );
         })}
       </div>
+
+      {/* Playlist picker modal */}
+      {showPlaylistPicker && (
+        <PlaylistPicker
+          playlists={playlists}
+          onSelect={handleAddToExistingPlaylist}
+          onCreateAndAdd={handleCreateAndAddPlaylist}
+          onClose={() => setShowPlaylistPicker(false)}
+        />
+      )}
 
       {/* Edit metadata modal */}
       {editingItem && (
