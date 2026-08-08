@@ -1,5 +1,3 @@
-import { CartItem } from '../db/database';
-
 export interface SearchResult {
   id: string;
   source: 'youtube' | 'direct' | 'local';

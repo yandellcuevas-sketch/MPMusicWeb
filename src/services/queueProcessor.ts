@@ -80,7 +80,8 @@ export class QueueProcessor {
           if (!this.cancelFlags.get(id)) {
             await db.cart.update(id, { progress });
           }
-        }
+        },
+        id
       );
 
       // Check for cancellation

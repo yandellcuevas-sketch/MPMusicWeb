@@ -28,7 +28,8 @@ export interface MediaProcessor {
     inputFile: File | Blob,
     outputFormat: 'mp3' | 'wav' | 'flac' | 'm4a' | 'mp4',
     qualityBitrate: '128' | '192' | '256' | '320',
-    onProgress?: (progress: number) => void
+    onProgress?: (progress: number) => void,
+    taskId?: string
   ): Promise<Blob>;
 
   /**

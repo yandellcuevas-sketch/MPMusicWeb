@@ -1,4 +1,4 @@
-import { CartItem } from '../db/database';
+import type { CartItem } from '../db/database';
 import { mediaRegistry } from './mediaAssetRegistry';
 
 /**
@@ -157,7 +157,7 @@ export class UsbService {
   /**
    * Triggers a fallback zip bundle download using the browser dynamic anchor trigger.
    */
-  async exportAsZipFallback(items: CartItem[]): Promise<Blob> {
+  async exportAsZipFallback(_items: CartItem[]): Promise<Blob> {
     // Note: We avoid embedding huge multi-MB compression scripts (like JSZip)
     // in RAM directly without limit. In modern PWA apps, we can construct
     // a basic ZIP structure or download files sequentially.

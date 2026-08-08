@@ -71,7 +71,7 @@ describe('queueProcessor', () => {
     await queueProcessor.processItem(item);
 
     expect(db.cart.update).toHaveBeenCalledWith('item_1', { status: 'processing', progress: 0 });
-    expect(mediaProcessor.convert).toHaveBeenCalledWith(file, 'mp3', '320', expect.any(Function));
+    expect(mediaProcessor.convert).toHaveBeenCalledWith(file, 'mp3', '320', expect.any(Function), 'item_1');
     expect(db.cart.update).toHaveBeenCalledWith('item_1', { status: 'ready', progress: 100 });
     expect(db.history.put).toHaveBeenCalled();
   });

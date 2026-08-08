@@ -1,4 +1,5 @@
-import { db, CartItem } from '../db/database';
+import { db } from '../db/database';
+import type { CartItem } from '../db/database';
 import { mediaRegistry } from './mediaAssetRegistry';
 
 /**
