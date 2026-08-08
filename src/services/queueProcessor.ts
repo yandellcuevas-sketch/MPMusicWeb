@@ -8,13 +8,22 @@ export class QueueProcessor {
   private activeCount = 0;
   private running = false;
   private cancelFlags = new Map<string, boolean>();
+  private activeScopeIds: Set<string> | null = null;
 
   /**
    * Starts processing the cart queue.
+   * If `ids` is provided, only processes items whose ID is in the list.
+   * If `ids` is undefined or null, processes all eligible items in the cart.
    */
-  async startProcessing() {
+  async startProcessing(ids?: string[]) {
     if (this.running) return;
     this.running = true;
+
+    if (ids && ids.length > 0) {
+      this.activeScopeIds = new Set(ids);
+    } else {
+      this.activeScopeIds = null;
+    }
 
     // Initialize media processor first
     await mediaProcessor.initialize().catch((err) => {
@@ -29,6 +38,13 @@ export class QueueProcessor {
    */
   stopProcessing() {
     this.running = false;
+  }
+
+  /**
+   * Returns whether the processor is currently running.
+   */
+  isRunning() {
+    return this.running;
   }
 
   /**
@@ -158,14 +174,20 @@ export class QueueProcessor {
     if (this.activeCount >= concurrencyLimit) return;
 
     // Fetch next pending item (ordered by addedAt)
-    const pendingItems = await db.cart
+    let pendingItems = await db.cart
       .where('status')
       .anyOf('pending', 'failed')
       .sortBy('addedAt');
 
+    // Filter by active scope if scoped processing was requested
+    if (this.activeScopeIds) {
+      pendingItems = pendingItems.filter(item => this.activeScopeIds!.has(item.id));
+    }
+
     if (pendingItems.length === 0) {
       if (this.activeCount === 0) {
         this.running = false; // Queue fully finished
+        this.activeScopeIds = null; // Clear scope
       }
       return;
     }
@@ -199,12 +221,21 @@ export class QueueProcessor {
   }
 
   /**
-   * Cancels all items in the processing queue.
+   * Cancels items in the processing queue.
+   * If an active scope is set, cancels only items in that scope.
    */
   async cancelAll() {
+    const scopeToCancel = this.activeScopeIds;
     this.stopProcessing();
+    this.activeScopeIds = null;
+
     const activeAndPending = await db.cart.toArray();
     for (const item of activeAndPending) {
+      // If scope was active, only cancel items belonging to that scope
+      if (scopeToCancel && !scopeToCancel.has(item.id)) {
+        continue;
+      }
+
       if (['preparing', 'processing', 'tagging', 'pending'].includes(item.status)) {
         await this.cancelTask(item.id);
       }

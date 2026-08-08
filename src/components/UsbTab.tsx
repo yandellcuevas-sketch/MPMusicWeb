@@ -11,9 +11,10 @@ interface UsbTabProps {
   showToast: (message: string, type: 'success' | 'info' | 'error') => void;
   /** When set, only export these specific item IDs (e.g. from Artists tab "Export Artist") */
   preselectedIds?: string[];
+  onClearSelection?: () => void;
 }
 
-export const UsbTab: React.FC<UsbTabProps> = ({ showToast, preselectedIds }) => {
+export const UsbTab: React.FC<UsbTabProps> = ({ showToast, preselectedIds, onClearSelection }) => {
   const cartItems = useLiveQuery(() => db.cart.toArray()) || [];
   const playlists = useLiveQuery(() => db.playlists.toArray()) || [];
 
@@ -200,6 +201,40 @@ export const UsbTab: React.FC<UsbTabProps> = ({ showToast, preselectedIds }) => 
         </div>
       )}
 
+      {/* Scoped export banner */}
+      {preselectedIds && preselectedIds.length > 0 && (
+        <div
+          className="card animate-slide-down"
+          style={{
+            marginBottom: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            backgroundColor: 'rgba(204, 255, 0, 0.08)',
+            borderColor: 'rgba(204, 255, 0, 0.3)',
+            padding: '12px 18px',
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: '700', fontSize: '14px', color: 'var(--accent)' }}>
+              EXPORTING SELECTION ({filteredItems.length} ready tracks)
+            </div>
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+              Only tracks selected in the previous screen will be exported.
+            </div>
+          </div>
+          {onClearSelection && (
+            <button
+              className="btn btn-secondary"
+              onClick={onClearSelection}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+            >
+              <X size={14} /> Exit selection
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Config grid — only shown in folder-write mode */}
       {supportsDirectoryPicker && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '20px', marginBottom: '24px' }}>
@@ -230,7 +265,7 @@ export const UsbTab: React.FC<UsbTabProps> = ({ showToast, preselectedIds }) => 
           <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <h3 style={{ margin: 0 }}>2. Export Settings</h3>
 
-            {!preselectedIds && (
+            {(!preselectedIds || preselectedIds.length === 0) && (
               <div>
                 <label style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Source</label>
                 <select className="input" value={selectedPlaylistId} onChange={(e) => setSelectedPlaylistId(e.target.value)} disabled={exporting}>
@@ -241,12 +276,6 @@ export const UsbTab: React.FC<UsbTabProps> = ({ showToast, preselectedIds }) => 
                     </option>
                   ))}
                 </select>
-              </div>
-            )}
-
-            {preselectedIds && preselectedIds.length > 0 && (
-              <div style={{ padding: '8px 10px', borderRadius: '6px', backgroundColor: 'var(--accent-muted)', fontSize: '12px', color: 'var(--accent)' }}>
-                Exporting {filteredItems.length} selected tracks
               </div>
             )}
 

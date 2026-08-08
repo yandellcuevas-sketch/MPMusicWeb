@@ -35,8 +35,22 @@ const App: React.FC = () => {
   const [playingTrack, setPlayingTrack] = useState<PreviewTrack | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
 
-  // Preselected IDs passed from Artists tab for USB export
-  const [usbPreselectedIds, setUsbPreselectedIds] = useState<string[] | undefined>(undefined);
+  // Scoped selections managed via React state with sessionStorage recovery
+  const [processingSelectionIds, setProcessingSelectionIds] = useState<string[] | null>(() => {
+    const raw = sessionStorage.getItem('processing_selection_ids');
+    if (raw) {
+      try { return JSON.parse(raw); } catch { return null; }
+    }
+    return null;
+  });
+
+  const [usbSelectionIds, setUsbSelectionIds] = useState<string[] | null>(() => {
+    const raw = sessionStorage.getItem('usb_selection_ids');
+    if (raw) {
+      try { return JSON.parse(raw); } catch { return null; }
+    }
+    return null;
+  });
 
   // Initialize Dexie default settings
   useEffect(() => {
@@ -53,23 +67,30 @@ const App: React.FC = () => {
     }, 4000);
   };
 
-  /** Navigate to a tab. Intercepts usb tab to pick up preselected IDs from localStorage. */
-  const handleNavigate = (tab: string) => {
-    if (tab === 'usb') {
-      const raw = localStorage.getItem('usb_export_selected_ids');
-      if (raw) {
-        try { setUsbPreselectedIds(JSON.parse(raw)); } catch { setUsbPreselectedIds(undefined); }
-        localStorage.removeItem('usb_export_selected_ids');
-      } else {
-        setUsbPreselectedIds(undefined);
-      }
-    }
-    setActiveTab(tab);
+  const handleProcessSelected = (ids: string[]) => {
+    setProcessingSelectionIds(ids);
+    sessionStorage.setItem('processing_selection_ids', JSON.stringify(ids));
+    setActiveTab('process');
+  };
+
+  const handleClearProcessSelection = () => {
+    setProcessingSelectionIds(null);
+    sessionStorage.removeItem('processing_selection_ids');
+  };
+
+  const handleExportSelected = (ids: string[]) => {
+    setUsbSelectionIds(ids);
+    sessionStorage.setItem('usb_selection_ids', JSON.stringify(ids));
+    setActiveTab('usb');
+  };
+
+  const handleClearUsbSelection = () => {
+    setUsbSelectionIds(null);
+    sessionStorage.removeItem('usb_selection_ids');
   };
 
   const handlePlayPreview = (track: PreviewTrack) => {
     if (playingTrack?.id === track.id) {
-      // Toggle play/pause if clicking same track
       setIsPlaying(!isPlaying);
     } else {
       setPlayingTrack(track);
@@ -101,7 +122,13 @@ const App: React.FC = () => {
           />
         );
       case 'process':
-        return <ProcessTab showToast={showToast} />;
+        return (
+          <ProcessTab
+            showToast={showToast}
+            selectedIds={processingSelectionIds}
+            onClearSelection={handleClearProcessSelection}
+          />
+        );
       case 'playlists':
         return (
           <PlaylistsTab
@@ -116,10 +143,18 @@ const App: React.FC = () => {
             onNavigate={setActiveTab}
             onPlayPreview={handlePlayPreview}
             showToast={showToast}
+            onProcessSelected={handleProcessSelected}
+            onExportSelected={handleExportSelected}
           />
         );
       case 'usb':
-        return <UsbTab showToast={showToast} preselectedIds={usbPreselectedIds} />;
+        return (
+          <UsbTab
+            showToast={showToast}
+            preselectedIds={usbSelectionIds ?? undefined}
+            onClearSelection={handleClearUsbSelection}
+          />
+        );
       case 'history':
         return <HistoryTab showToast={showToast} />;
       case 'settings':
@@ -143,7 +178,7 @@ const App: React.FC = () => {
       </div>
 
       {/* Main layout sidebar navigation */}
-      <Sidebar activeTab={activeTab} onNavigate={handleNavigate} />
+      <Sidebar activeTab={activeTab} onNavigate={setActiveTab} />
 
       {/* Main view container */}
       <div className="main-layout">

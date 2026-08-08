@@ -13,6 +13,8 @@ interface ArtistsTabProps {
   onNavigate: (tab: string) => void;
   onPlayPreview: (track: { id: string; title: string; artist: string; thumbnailUrl: string; previewUrl: string }) => void;
   showToast: (message: string, type: 'success' | 'info' | 'error') => void;
+  onProcessSelected?: (ids: string[]) => void;
+  onExportSelected?: (ids: string[]) => void;
 }
 
 // ─── Avatar ───────────────────────────────────────────────────────────────────
@@ -164,7 +166,13 @@ const PlaylistPicker: React.FC<PlaylistPickerProps> = ({ playlists, onSelect, on
 };
 
 // ─── Main Tab ─────────────────────────────────────────────────────────────────
-export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPreview, showToast }) => {
+export const ArtistsTab: React.FC<ArtistsTabProps> = ({
+  onNavigate,
+  onPlayPreview,
+  showToast,
+  onProcessSelected,
+  onExportSelected,
+}) => {
   const allItems = useLiveQuery(() => db.cart.orderBy('addedAt').toArray()) || [];
   const playlists = useLiveQuery(() => db.playlists.toArray()) || [];
 
@@ -255,41 +263,21 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
 
   /**
    * Process selected IDs only.
-   * Stores the selection in localStorage so ProcessTab can pick it up and
-   * reset only those items to pending. Then navigates to Queue.
+   * Calls onProcessSelected with selectedIds to navigate to ProcessTab scoped to this selection.
    */
-  const handleProcessSelected = async () => {
+  const handleProcessSelected = () => {
     if (selectedIds.length === 0) return;
 
-    // Reset only selected items to pending (local + youtube with sourceUrl)
-    const idsToProcess = selectedIds.filter((id) => {
-      const item = allItems.find((i) => i.id === id);
-      if (!item) return false;
-      // Skip YouTube items without a direct stream URL — they can't be processed
-      if (item.source === 'youtube' && !item.sourceUrl) return false;
-      return true;
-    });
-
-    if (idsToProcess.length === 0) {
-      showToast('None of the selected tracks can be processed (no local file or direct URL).', 'error');
-      return;
+    if (onProcessSelected) {
+      onProcessSelected(selectedIds);
+    } else {
+      onNavigate('process');
     }
-
-    await db.transaction('rw', db.cart, async () => {
-      for (const id of idsToProcess) {
-        await db.cart.update(id, { status: 'pending', progress: 0, errorMessage: undefined });
-      }
-    });
-
-    // Signal ProcessTab to start immediately with these items
-    localStorage.setItem('process_selected_ids', JSON.stringify(idsToProcess));
-    showToast(`Queued ${idsToProcess.length} tracks for processing.`, 'info');
-    onNavigate('process');
   };
 
   /**
-   * Export selected IDs.
-   * Stores selectedIds in localStorage so UsbTab's preselectedIds is populated.
+   * Export selected ready IDs.
+   * Calls onExportSelected with ready selected IDs to navigate to UsbTab scoped to this selection.
    */
   const handleExportSelected = () => {
     if (selectedIds.length === 0) return;
@@ -304,9 +292,11 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
       return;
     }
 
-    localStorage.setItem('usb_export_selected_ids', JSON.stringify(readySelected));
-    showToast(`Sending ${readySelected.length} tracks to USB Export.`, 'info');
-    onNavigate('usb');
+    if (onExportSelected) {
+      onExportSelected(readySelected);
+    } else {
+      onNavigate('usb');
+    }
   };
 
   /**
@@ -367,7 +357,6 @@ export const ArtistsTab: React.FC<ArtistsTabProps> = ({ onNavigate, onPlayPrevie
       await db.cart.update(editingItem.id, {
         title: editingItem.title,
         artist: editingItem.artist,
-        // Use the shared normalizeArtist utility — single source of truth
         artistNormalized: normalizeArtist(editingItem.artist),
         album: editingItem.album,
         year: editingItem.year,
