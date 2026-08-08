@@ -12,8 +12,8 @@ export class QueueProcessor {
 
   /**
    * Starts processing the cart queue.
-   * If `ids` is provided, only processes items whose ID is in the list.
-   * If `ids` is undefined or null, processes all eligible items in the cart.
+   * If `ids` is provided and non-empty, only processes items whose ID is in the list.
+   * If `ids` is undefined, null, or empty, processes all eligible items in the cart (global queue).
    */
   async startProcessing(ids?: string[]) {
     if (this.running) return;
@@ -25,10 +25,15 @@ export class QueueProcessor {
       this.activeScopeIds = null;
     }
 
-    // Initialize media processor first
-    await mediaProcessor.initialize().catch((err) => {
+    try {
+      // Initialize media processor first
+      await mediaProcessor.initialize();
+    } catch (err) {
       console.error('Failed to initialize media processor:', err);
-    });
+      this.running = false;
+      this.activeScopeIds = null;
+      return;
+    }
 
     this.processNext();
   }
@@ -45,6 +50,13 @@ export class QueueProcessor {
    */
   isRunning() {
     return this.running;
+  }
+
+  /**
+   * Returns a copy of active scope IDs (or null if in global mode).
+   */
+  getActiveScopeIds(): Set<string> | null {
+    return this.activeScopeIds ? new Set(this.activeScopeIds) : null;
   }
 
   /**

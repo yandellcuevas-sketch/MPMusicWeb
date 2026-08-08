@@ -36,16 +36,34 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
     showToast(`Concurrency pool limited to ${val} tasks`, 'info');
   };
 
+  // Filter selectedIds to only those that currently exist in the database
+  const validSelectedIds = useMemo(() => {
+    if (!selectedIds || selectedIds.length === 0) return null;
+    const existingIdSet = new Set(items.map((i) => i.id));
+    const filtered = selectedIds.filter((id) => existingIdSet.has(id));
+    return filtered.length > 0 ? filtered : null;
+  }, [items, selectedIds]);
+
+  // Auto-exit scoped mode if all selected IDs no longer exist in the cart
+  useEffect(() => {
+    if (selectedIds && selectedIds.length > 0 && items.length > 0) {
+      const existsAny = selectedIds.some((id) => items.some((i) => i.id === id));
+      if (!existsAny && onClearSelection) {
+        onClearSelection();
+      }
+    }
+  }, [selectedIds, items, onClearSelection]);
+
   // Determine active scope: whether we are processing a specific subset or all cart items
-  const isScoped = Boolean(selectedIds && selectedIds.length > 0);
+  const isScoped = Boolean(validSelectedIds && validSelectedIds.length > 0);
 
   // Items to display and operate on in the current view
   const displayItems = useMemo(() => {
-    if (isScoped && selectedIds) {
-      return items.filter((item) => selectedIds.includes(item.id));
+    if (isScoped && validSelectedIds) {
+      return items.filter((item) => validSelectedIds.includes(item.id));
     }
     return items;
-  }, [items, isScoped, selectedIds]);
+  }, [items, isScoped, validSelectedIds]);
 
   const startQueue = async () => {
     const targetItems = displayItems;
@@ -78,8 +96,8 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
       }
     });
 
-    if (isScoped && selectedIds) {
-      await queueProcessor.startProcessing(selectedIds);
+    if (isScoped && validSelectedIds) {
+      await queueProcessor.startProcessing(validSelectedIds);
     } else {
       await queueProcessor.startProcessing();
     }
@@ -117,6 +135,18 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
       running,
     };
   }, [displayItems]);
+
+  // When scoped queue finishes completely, clear sessionStorage to prevent stale scope on next reload
+  useEffect(() => {
+    if (
+      isScoped &&
+      queueStats.total > 0 &&
+      !queueStats.running &&
+      queueStats.ready + queueStats.failed === queueStats.total
+    ) {
+      sessionStorage.removeItem('processing_selection_ids');
+    }
+  }, [isScoped, queueStats]);
 
   const getStatusIcon = (status: string) => {
     switch (status) {

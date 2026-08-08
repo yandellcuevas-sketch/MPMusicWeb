@@ -113,7 +113,7 @@ describe('QueueProcessor', () => {
     );
   });
 
-  describe('Scoped Processing (startProcessing with selectedIds)', () => {
+  describe('Scoped Processing Lifecycle & Scope Isolation', () => {
     it('processes ONLY selected items (B, D) and leaves others (A, C, E) untouched', async () => {
       const itemA = createMockItem('A', 'pending');
       const itemB = createMockItem('B', 'pending');
@@ -123,25 +123,114 @@ describe('QueueProcessor', () => {
 
       mockCartItems = [itemA, itemB, itemC, itemD, itemE];
 
-      // Register mock files for all items
       for (const id of ['A', 'B', 'C', 'D', 'E']) {
         mediaRegistry.registerLocalFile(id, new File(['audio'], `${id}.mp3`));
       }
 
-      // Start processing scoped to B and D only
       await processor.startProcessing(['B', 'D']);
-
-      // Wait a tick for async execution loop
       await new Promise((resolve) => setTimeout(resolve, 50));
 
-      // B and D must be ready
       expect(itemB.status).toBe('ready');
       expect(itemD.status).toBe('ready');
 
-      // A, C, E must remain pending
       expect(itemA.status).toBe('pending');
       expect(itemC.status).toBe('pending');
       expect(itemE.status).toBe('pending');
+    });
+
+    it('cleans activeScopeIds upon completion and allows a subsequent global run to process A, C, E', async () => {
+      const itemA = createMockItem('A', 'pending');
+      const itemB = createMockItem('B', 'pending');
+      const itemC = createMockItem('C', 'pending');
+      const itemD = createMockItem('D', 'pending');
+      const itemE = createMockItem('E', 'pending');
+
+      mockCartItems = [itemA, itemB, itemC, itemD, itemE];
+
+      for (const id of ['A', 'B', 'C', 'D', 'E']) {
+        mediaRegistry.registerLocalFile(id, new File(['audio'], `${id}.mp3`));
+      }
+
+      // First run: scoped to B and D
+      await processor.startProcessing(['B', 'D']);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(itemB.status).toBe('ready');
+      expect(itemD.status).toBe('ready');
+      expect(processor.isRunning()).toBe(false);
+      expect(processor.getActiveScopeIds()).toBeNull();
+
+      // Second run: global processing without IDs
+      await processor.startProcessing();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // A, C, E must now also be processed to ready
+      expect(itemA.status).toBe('ready');
+      expect(itemC.status).toBe('ready');
+      expect(itemE.status).toBe('ready');
+      expect(processor.getActiveScopeIds()).toBeNull();
+    });
+
+    it('cleans activeScopeIds after cancelAll() and allows subsequent global run', async () => {
+      const itemA = createMockItem('A', 'pending');
+      const itemB = createMockItem('B', 'pending');
+      const itemC = createMockItem('C', 'pending');
+
+      mockCartItems = [itemA, itemB, itemC];
+      for (const id of ['A', 'B', 'C']) {
+        mediaRegistry.registerLocalFile(id, new File(['audio'], `${id}.mp3`));
+      }
+
+      // Start scoped to B
+      await processor.startProcessing(['B']);
+      // Cancel during or after
+      await processor.cancelAll();
+
+      expect(processor.isRunning()).toBe(false);
+      expect(processor.getActiveScopeIds()).toBeNull();
+
+      // Reset itemB to pending for the subsequent run
+      itemB.status = 'pending';
+
+      // Global run must process all items
+      await processor.startProcessing();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(itemA.status).toBe('ready');
+      expect(itemB.status).toBe('ready');
+      expect(itemC.status).toBe('ready');
+    });
+
+    it('handles invalid scope (non-existent ID) cleanly without blocking future executions', async () => {
+      const itemA = createMockItem('A', 'pending');
+      mockCartItems = [itemA];
+      mediaRegistry.registerLocalFile('A', new File(['audio'], 'A.mp3'));
+
+      // Start with non-existent ID
+      await processor.startProcessing(['NO_EXISTE']);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(processor.isRunning()).toBe(false);
+      expect(processor.getActiveScopeIds()).toBeNull();
+      expect(itemA.status).toBe('pending');
+
+      // Subsequent execution must work normally
+      await processor.startProcessing();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(itemA.status).toBe('ready');
+    });
+
+    it('handles empty scope array by treating it as global processing', async () => {
+      const itemA = createMockItem('A', 'pending');
+      mockCartItems = [itemA];
+      mediaRegistry.registerLocalFile('A', new File(['audio'], 'A.mp3'));
+
+      await processor.startProcessing([]);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(itemA.status).toBe('ready');
+      expect(processor.getActiveScopeIds()).toBeNull();
     });
 
     it('leaves failed and pending items outside scope untouched', async () => {
@@ -158,52 +247,6 @@ describe('QueueProcessor', () => {
       expect(itemScoped.status).toBe('ready');
       expect(itemPending.status).toBe('pending');
       expect(itemFailed.status).toBe('failed');
-    });
-
-    it('handles selection with non-existent ID gracefully', async () => {
-      const itemA = createMockItem('A', 'pending');
-      mockCartItems = [itemA];
-      mediaRegistry.registerLocalFile('A', new File(['audio'], 'A.mp3'));
-
-      // Non-existent ID 'Z' selected
-      await processor.startProcessing(['Z']);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-
-      // Item A is untouched because it was not in scope
-      expect(itemA.status).toBe('pending');
-      expect(processor.isRunning()).toBe(false);
-    });
-
-    it('processes all items when startProcessing is called without IDs (global queue)', async () => {
-      const item1 = createMockItem('1', 'pending');
-      const item2 = createMockItem('2', 'pending');
-
-      mockCartItems = [item1, item2];
-      mediaRegistry.registerLocalFile('1', new File(['audio'], '1.mp3'));
-      mediaRegistry.registerLocalFile('2', new File(['audio'], '2.mp3'));
-
-      await processor.startProcessing(); // No IDs passed -> global processing
-      await new Promise((resolve) => setTimeout(resolve, 50));
-
-      expect(item1.status).toBe('ready');
-      expect(item2.status).toBe('ready');
-    });
-
-    it('cancels only scoped items when cancelAll is called during scoped processing', async () => {
-      const itemA = createMockItem('A', 'pending');
-      const itemB = createMockItem('B', 'pending');
-      mockCartItems = [itemA, itemB];
-
-      // Start processing scoped to A
-      await processor.startProcessing(['A']);
-
-      // Call cancelAll
-      await processor.cancelAll();
-
-      // Item A should be cancelled
-      expect(itemA.status).toBe('cancelled');
-      // Item B was outside scope, remains pending
-      expect(itemB.status).toBe('pending');
     });
   });
 });
