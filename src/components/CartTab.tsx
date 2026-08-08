@@ -1,13 +1,13 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useRef } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/database';
 import type { CartItem } from '../db/database';
 import { cartService } from '../services/cartService';
 import { mediaRegistry } from '../services/mediaAssetRegistry';
-import { getArtistSummary } from '../utils/artistUtils';
+import { getArtistSummary, normalizeArtist } from '../utils/artistUtils';
 import {
   Trash2, Edit3, Music, CheckSquare, Square, Layers,
-  ArrowRight, X, Play, Search, SlidersHorizontal, ChevronDown
+  ArrowRight, X, Play, Search, SlidersHorizontal, Upload
 } from 'lucide-react';
 
 type SortKey = 'addedAt_desc' | 'addedAt_asc' | 'title_az' | 'artist_az' | 'duration_asc' | 'duration_desc' | 'status';
@@ -37,7 +37,11 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
   const [showBulkOptions, setShowBulkOptions] = useState(false);
   const [bulkFormat, setBulkFormat] = useState<'mp3' | 'wav' | 'flac' | 'm4a' | 'mp4'>('mp3');
   const [bulkQuality, setBulkQuality] = useState<'128' | '192' | '256' | '320'>('320');
-  const coverInputRef = React.useRef<HTMLInputElement>(null);
+  const coverInputRef = useRef<HTMLInputElement>(null);
+
+  // File attachment for preview-only / source_required items
+  const [attachTargetId, setAttachTargetId] = useState<string | null>(null);
+  const attachInputRef = useRef<HTMLInputElement>(null);
 
   // Distinct artist list for the filter dropdown
   const artistOptions = useMemo(() => getArtistSummary(items), [items]);
@@ -72,7 +76,7 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
     // Dropdown filters
     if (filterArtist) {
       result = result.filter((item) =>
-        (item.artistNormalized || item.artist.toLowerCase().trim()) === filterArtist
+        (item.artistNormalized || normalizeArtist(item.artist)) === filterArtist
       );
     }
     if (filterFormat) result = result.filter((item) => item.outputFormat === filterFormat);
@@ -101,20 +105,22 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
   }, []);
 
   const toggleSelectAll = () => {
-    if (selectedIds.length === displayItems.length) {
-      setSelectedIds([]);
-    } else {
-      setSelectedIds(displayItems.map((x) => x.id));
-    }
+    const visibleIds = displayItems.map((i) => i.id);
+    const allSelected = visibleIds.every((id) => selectedIds.includes(id));
+    setSelectedIds((prev) =>
+      allSelected ? prev.filter((id) => !visibleIds.includes(id)) : Array.from(new Set([...prev, ...visibleIds]))
+    );
   };
 
   const deleteSelected = async () => {
     try {
-      for (const id of selectedIds) await cartService.removeFromCart(id);
-      showToast(`Removed ${selectedIds.length} items.`, 'success');
+      for (const id of selectedIds) {
+        await cartService.removeFromCart(id);
+      }
+      showToast(`Removed ${selectedIds.length} items from cart.`, 'success');
       setSelectedIds([]);
     } catch {
-      showToast('Failed to delete selected items.', 'error');
+      showToast('Failed to delete items.', 'error');
     }
   };
 
@@ -126,30 +132,62 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
           await db.cart.update(id, { outputFormat: bulkFormat, quality: bulkQuality });
         }
       });
-      showToast(`Applied settings to ${selectedIds.length} tracks.`, 'success');
+      showToast(`Updated format on ${selectedIds.length} tracks.`, 'success');
       setShowBulkOptions(false);
     } catch {
-      showToast('Failed to apply bulk settings.', 'error');
+      showToast('Failed to update formats.', 'error');
     }
   };
 
-  const applyPreset = async (presetName: 'universal' | 'car' | 'dj' | 'hq' | 'small') => {
+  const applyPreset = async (presetName: 'universal' | 'car' | 'dj' | 'hq') => {
     if (selectedIds.length === 0) return;
-    const presetMap: Record<string, { outputFormat: any; quality: any }> = {
-      universal: { outputFormat: 'mp3', quality: '192' },
-      car: { outputFormat: 'mp3', quality: '128' },
-      dj: { outputFormat: 'wav', quality: '320' },
-      hq: { outputFormat: 'flac', quality: '320' },
-      small: { outputFormat: 'mp3', quality: '128' },
+    const formatMap: Record<string, 'mp3' | 'wav' | 'flac'> = {
+      universal: 'mp3',
+      car: 'mp3',
+      dj: 'wav',
+      hq: 'flac',
     };
-    const preset = presetMap[presetName];
+    const qualityMap: Record<string, '128' | '192' | '256' | '320'> = {
+      universal: '320',
+      car: '192',
+      dj: '320',
+      hq: '320',
+    };
     try {
       await db.transaction('rw', db.cart, async () => {
-        for (const id of selectedIds) await db.cart.update(id, preset);
+        for (const id of selectedIds) {
+          await db.cart.update(id, {
+            outputFormat: formatMap[presetName] || 'mp3',
+            quality: qualityMap[presetName] || '320',
+          });
+        }
       });
       showToast(`Applied "${presetName.toUpperCase()}" preset to ${selectedIds.length} tracks.`, 'success');
     } catch {
       showToast('Failed to apply preset.', 'error');
+    }
+  };
+
+  const triggerAttachFile = (itemId: string) => {
+    setAttachTargetId(itemId);
+    if (attachInputRef.current) {
+      attachInputRef.current.value = '';
+      attachInputRef.current.click();
+    }
+  };
+
+  const handleFileAttachChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0] && attachTargetId) {
+      const file = e.target.files[0];
+      const targetItem = items.find((i) => i.id === attachTargetId);
+      try {
+        await cartService.attachLocalFile(attachTargetId, file);
+        showToast(`Attached "${file.name}" to "${targetItem?.title || 'track'}". Ready to process!`, 'success');
+      } catch {
+        showToast('Failed to attach source file.', 'error');
+      } finally {
+        setAttachTargetId(null);
+      }
     }
   };
 
@@ -160,7 +198,7 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
       await db.cart.update(editingItem.id, {
         title: editingItem.title,
         artist: editingItem.artist,
-        artistNormalized: editingItem.artist.toLowerCase().trim().replace(/\s+/g, ' '),
+        artistNormalized: normalizeArtist(editingItem.artist),
         album: editingItem.album,
         year: editingItem.year,
         genre: editingItem.genre,
@@ -235,10 +273,20 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
     cancelled: '#f59e0b',
     processing: 'var(--accent)',
     pending: 'var(--text-muted)',
+    source_required: 'var(--warning)',
   };
 
   return (
     <div className="cart-tab animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* Hidden file input for attaching local media source */}
+      <input
+        type="file"
+        ref={attachInputRef}
+        style={{ display: 'none' }}
+        accept="audio/*,video/*,.mp3,.mp4,.wav,.flac,.m4a,.webm,.ogg"
+        onChange={handleFileAttachChange}
+      />
+
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
         <div>
@@ -248,89 +296,80 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
           </p>
         </div>
         {items.length > 0 && (
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            <button className="btn btn-secondary" onClick={toggleSelectAll}>
-              {selectedIds.length === displayItems.length && displayItems.length > 0 ? 'Deselect All' : 'Select All'}
-            </button>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
             <button
-              className="btn btn-secondary"
-              onClick={() => setShowBulkOptions(!showBulkOptions)}
-              disabled={selectedIds.length === 0}
+              className={`btn ${showFilters ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setShowFilters(!showFilters)}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
             >
-              <Layers size={15} /> Bulk
+              <SlidersHorizontal size={14} />
+              Filters
+              {activeFilterCount > 0 && (
+                <span style={{ backgroundColor: 'var(--accent)', color: '#000', borderRadius: '10px', padding: '1px 6px', fontSize: '10px', fontWeight: '700' }}>
+                  {activeFilterCount}
+                </span>
+              )}
             </button>
-            <button className="btn btn-danger" onClick={deleteSelected} disabled={selectedIds.length === 0}>
-              <Trash2 size={15} /> Delete ({selectedIds.length})
+
+            {selectedIds.length > 0 && (
+              <>
+                <button
+                  className={`btn ${showBulkOptions ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => setShowBulkOptions(!showBulkOptions)}
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Layers size={14} /> Bulk ({selectedIds.length})
+                </button>
+                <button className="btn btn-danger btn-icon-only" onClick={deleteSelected} title="Delete selected">
+                  <Trash2 size={14} />
+                </button>
+              </>
+            )}
+
+            <button className="btn btn-primary" onClick={() => onNavigate('process')} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              Go to Queue <ArrowRight size={14} />
             </button>
           </div>
         )}
       </div>
 
-      {/* Search + Filter bar */}
+      {/* Search Bar + Sort selector */}
       {items.length > 0 && (
-        <div style={{ marginBottom: '12px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-          {/* Search */}
-          <div style={{ position: 'relative', flexGrow: 1, minWidth: '180px' }}>
-            <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+          <div style={{ position: 'relative', flexGrow: 1, minWidth: '200px' }}>
+            <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
             <input
               type="text"
               className="input"
-              placeholder="Search title, artist, album…"
+              style={{ paddingLeft: '32px', fontSize: '13px', height: '36px' }}
+              placeholder="Search by title, artist, album, genre…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              style={{ paddingLeft: '32px' }}
             />
-          </div>
-
-          {/* Filter toggle */}
-          <button
-            className={`btn ${showFilters || activeFilterCount > 0 ? 'btn-primary' : 'btn-secondary'}`}
-            onClick={() => setShowFilters(!showFilters)}
-            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-          >
-            <SlidersHorizontal size={14} />
-            Filters
-            {activeFilterCount > 0 && (
-              <span style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '10px', padding: '1px 6px', fontSize: '11px' }}>
-                {activeFilterCount}
-              </span>
+            {search && (
+              <X size={13} style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', cursor: 'pointer' }} onClick={() => setSearch('')} />
             )}
-          </button>
-
-          {/* Sort */}
-          <div style={{ position: 'relative' }}>
-            <select
-              className="input"
-              value={sortKey}
-              onChange={(e) => setSortKey(e.target.value as SortKey)}
-              style={{ paddingRight: '28px', appearance: 'none', minWidth: '140px' }}
-            >
-              <option value="addedAt_desc">Newest first</option>
-              <option value="addedAt_asc">Oldest first</option>
-              <option value="title_az">Title A–Z</option>
-              <option value="artist_az">Artist A–Z</option>
-              <option value="duration_asc">Shortest first</option>
-              <option value="duration_desc">Longest first</option>
-              <option value="status">Status</option>
-            </select>
-            <ChevronDown size={13} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--text-muted)' }} />
           </div>
 
-          {activeFilterCount > 0 && (
-            <button className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '4px' }} onClick={clearFilters}>
-              <X size={12} /> Clear
-            </button>
-          )}
+          <select className="input" style={{ width: 'auto', minWidth: '150px', fontSize: '12px', height: '36px' }} value={sortKey} onChange={(e: any) => setSortKey(e.target.value)}>
+            <option value="addedAt_desc">Newest first</option>
+            <option value="addedAt_asc">Oldest first</option>
+            <option value="title_az">Title A–Z</option>
+            <option value="artist_az">Artist A–Z</option>
+            <option value="duration_desc">Longest first</option>
+            <option value="duration_asc">Shortest first</option>
+            <option value="status">By Status</option>
+          </select>
         </div>
       )}
 
-      {/* Filter dropdowns */}
-      {showFilters && items.length > 0 && (
-        <div className="card animate-slide-down" style={{ marginBottom: '12px', display: 'flex', gap: '12px', flexWrap: 'wrap', padding: '14px 16px' }}>
+      {/* Filter panel */}
+      {showFilters && (
+        <div className="card animate-slide-down" style={{ marginBottom: '12px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px', padding: '12px 14px' }}>
           {/* Artist filter */}
           <div>
             <label style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'block', marginBottom: '3px' }}>Artist</label>
-            <select className="input" style={{ minWidth: '140px' }} value={filterArtist} onChange={(e) => setFilterArtist(e.target.value)}>
+            <select className="input" value={filterArtist} onChange={(e) => setFilterArtist(e.target.value)}>
               <option value="">All Artists</option>
               {artistOptions.map((a) => (
                 <option key={a.key} value={a.key}>{a.displayName} ({a.count})</option>
@@ -346,7 +385,6 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
               <option value="wav">WAV</option>
               <option value="flac">FLAC</option>
               <option value="m4a">M4A</option>
-              <option value="mp4">MP4</option>
             </select>
           </div>
           {/* Status filter */}
@@ -356,6 +394,7 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
               <option value="">All Statuses</option>
               <option value="pending">Pending</option>
               <option value="ready">Ready</option>
+              <option value="source_required">Source Required</option>
               <option value="failed">Failed</option>
               <option value="cancelled">Cancelled</option>
             </select>
@@ -448,22 +487,24 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
           <div className="empty-state">
             <Music size={48} className="empty-state-icon" />
             <div className="empty-state-title">Your Cart is Empty</div>
-            <p>Go to Discover or Import to add tracks here.</p>
+            <p>Discover tracks from YouTube or import local music files to start building your collection.</p>
             <button className="btn btn-primary" style={{ marginTop: '16px' }} onClick={() => onNavigate('search')}>
-              Browse Music
+              Discover Tracks
             </button>
           </div>
         ) : displayItems.length === 0 ? (
-          <div className="empty-state" style={{ padding: '60px' }}>
-            <Search size={36} className="empty-state-icon" />
-            <div className="empty-state-title">No Matches</div>
-            <p>No tracks match your current filters.</p>
-            <button className="btn btn-secondary" style={{ marginTop: '12px' }} onClick={clearFilters}>Clear Filters</button>
+          <div className="empty-state" style={{ padding: '32px 16px' }}>
+            <Search size={32} className="empty-state-icon" />
+            <div className="empty-state-title" style={{ fontSize: '15px' }}>No matches for active filters</div>
+            <button className="btn btn-secondary" style={{ marginTop: '10px', fontSize: '12px' }} onClick={clearFilters}>
+              Clear All Filters
+            </button>
           </div>
         ) : (
           displayItems.map((item) => {
             const isSelected = selectedIds.includes(item.id);
             const isYouTube = item.source === 'youtube';
+            const isSourceRequired = item.status === 'source_required' || (!item.allowProcessing && !mediaRegistry.hasLocalFile(item.id));
 
             return (
               <div
@@ -505,9 +546,11 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
                     <span style={{ fontSize: '11px', color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '160px' }}>
                       {item.artist}
                     </span>
-                    <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                      {formatSec(item.duration)}
-                    </span>
+                    {item.duration > 0 && (
+                      <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                        {formatSec(item.duration)}
+                      </span>
+                    )}
                     <span style={{
                       fontSize: '9px', fontWeight: '700', padding: '1px 4px', borderRadius: '3px',
                       backgroundColor: isYouTube ? '#ff0000' : 'rgba(255,255,255,0.08)',
@@ -525,12 +568,17 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
                     {['mp3', 'm4a'].includes(item.outputFormat) && ` ${item.quality}k`}
                   </span>
                   <span style={{ fontSize: '10px', color: statusColor[item.status] || 'var(--text-muted)', textTransform: 'uppercase', fontWeight: '600' }}>
-                    {item.status}
+                    {item.status === 'source_required' ? 'Source Required' : item.status}
                   </span>
-                  {isYouTube && (
-                    <span style={{ fontSize: '9px', padding: '2px 5px', borderRadius: '4px', backgroundColor: 'rgba(245, 158, 11, 0.12)', color: 'var(--warning)', border: '1px solid rgba(245, 158, 11, 0.2)' }}>
-                      Preview Only
-                    </span>
+                  {isSourceRequired && (
+                    <button
+                      className="btn btn-secondary"
+                      style={{ fontSize: '11px', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      onClick={() => triggerAttachFile(item.id)}
+                      title="Attach your local audio file to convert this selection"
+                    >
+                      <Upload size={11} /> Attach file
+                    </button>
                   )}
                 </div>
 
@@ -554,50 +602,56 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
         )}
       </div>
 
-      {/* Footer stats */}
+      {/* Sticky footer */}
       {items.length > 0 && (
-        <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', backgroundColor: '#0c0c0c', borderTop: '2px solid var(--accent-muted)', marginTop: 'auto', flexWrap: 'wrap', gap: '12px' }}>
-          <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
-            <div>
-              <div style={{ fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
-                {activeFilterCount > 0 ? 'Filtered' : 'Total'} Items
-              </div>
-              <div style={{ fontSize: '18px', fontWeight: '700' }}>
-                {stats.totalCount}
-                {activeFilterCount > 0 && <span style={{ fontSize: '12px', color: 'var(--text-muted)', marginLeft: '4px' }}>/ {items.length}</span>}
-              </div>
-            </div>
-            <div>
-              <div style={{ fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>Duration</div>
-              <div style={{ fontSize: '18px', fontWeight: '700' }}>{stats.timeString}</div>
-            </div>
-            <div>
-              <div style={{ fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>Est. Output</div>
-              <div style={{ fontSize: '18px', fontWeight: '700', color: 'var(--accent)' }}>~ {stats.sizeString}</div>
+        <div
+          className="card"
+          style={{
+            marginTop: 'auto',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            padding: '12px 18px',
+            backgroundColor: '#0c0c0c',
+            borderTop: '1px solid var(--border-subtle)',
+            flexWrap: 'wrap',
+            gap: '12px',
+          }}
+        >
+          <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+            <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '6px 12px' }} onClick={toggleSelectAll}>
+              {displayItems.length > 0 && displayItems.every((i) => selectedIds.includes(i.id)) ? 'Deselect All' : `Select All (${displayItems.length})`}
+            </button>
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+              Showing {stats.totalCount} tracks · ~{stats.timeString} · ~{stats.sizeString}
             </div>
           </div>
-          <button className="btn btn-primary" style={{ padding: '12px 24px', fontSize: '14px' }} onClick={() => onNavigate('process')}>
-            Process Queue <ArrowRight size={14} />
-          </button>
+
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button className="btn btn-primary" onClick={() => onNavigate('process')} style={{ padding: '8px 20px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              Proceed to Queue <ArrowRight size={15} />
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Edit metadata modal */}
+      {/* Edit Metadata Modal */}
       {editingItem && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
-          <form className="card" onSubmit={saveMetadataEdit} style={{ maxWidth: '500px', width: '100%', maxHeight: '90vh', overflowY: 'auto' }}>
+          <form className="card animate-scale-up" onSubmit={saveMetadataEdit} style={{ maxWidth: '480px', width: '100%', maxHeight: '90vh', overflowY: 'auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-              <h2 style={{ margin: 0 }}>Edit Metadata (ID3 Tags)</h2>
+              <h2 style={{ margin: 0 }}>Edit Track Metadata</h2>
               <button type="button" style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }} onClick={() => setEditingItem(null)}>
                 <X size={18} />
               </button>
             </div>
+
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
               <div style={{ gridColumn: 'span 2' }}>
                 <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Title</label>
                 <input type="text" className="input" value={editingItem.title} onChange={(e) => setEditingItem({ ...editingItem, title: e.target.value })} required />
               </div>
-              <div>
+              <div style={{ gridColumn: 'span 2' }}>
                 <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Artist</label>
                 <input type="text" className="input" value={editingItem.artist} onChange={(e) => setEditingItem({ ...editingItem, artist: e.target.value })} required />
               </div>
@@ -613,40 +667,42 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
                 <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Year</label>
                 <input type="text" className="input" value={editingItem.year || ''} onChange={(e) => setEditingItem({ ...editingItem, year: e.target.value })} />
               </div>
-              <div style={{ gridColumn: 'span 2' }}>
+              <div>
                 <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Track #</label>
-                <input type="text" className="input" style={{ width: '100px' }} value={editingItem.trackNumber || ''} onChange={(e) => setEditingItem({ ...editingItem, trackNumber: e.target.value })} />
+                <input type="text" className="input" value={editingItem.trackNumber || ''} onChange={(e) => setEditingItem({ ...editingItem, trackNumber: e.target.value })} />
               </div>
-              <div style={{ gridColumn: 'span 2' }}>
-                <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Format & Bitrate</label>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <select className="input" value={editingItem.outputFormat} onChange={(e: any) => setEditingItem({ ...editingItem, outputFormat: e.target.value })}>
-                    <option value="mp3">MP3</option>
-                    <option value="wav">WAV</option>
-                    <option value="flac">FLAC</option>
-                    <option value="m4a">M4A</option>
-                  </select>
-                  {['mp3', 'm4a'].includes(editingItem.outputFormat) && (
-                    <select className="input" value={editingItem.quality} onChange={(e: any) => setEditingItem({ ...editingItem, quality: e.target.value })}>
-                      <option value="128">128 kbps</option>
-                      <option value="192">192 kbps</option>
-                      <option value="256">256 kbps</option>
-                      <option value="320">320 kbps</option>
-                    </select>
-                  )}
-                </div>
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Output Format</label>
+                <select className="input" value={editingItem.outputFormat} onChange={(e: any) => setEditingItem({ ...editingItem, outputFormat: e.target.value })}>
+                  <option value="mp3">MP3</option>
+                  <option value="wav">WAV</option>
+                  <option value="flac">FLAC</option>
+                  <option value="m4a">M4A</option>
+                </select>
               </div>
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Quality</label>
+                <select className="input" value={editingItem.quality} onChange={(e: any) => setEditingItem({ ...editingItem, quality: e.target.value })} disabled={['wav', 'flac'].includes(editingItem.outputFormat)}>
+                  <option value="128">128 kbps</option>
+                  <option value="192">192 kbps</option>
+                  <option value="256">256 kbps</option>
+                  <option value="320">320 kbps</option>
+                </select>
+              </div>
+
               <div style={{ gridColumn: 'span 2' }}>
-                <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Custom Cover Art (JPEG/PNG)</label>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Custom Cover Art</label>
                 <input type="file" ref={coverInputRef} style={{ display: 'none' }} accept="image/*" onChange={handleCoverSelect} />
                 <button type="button" className="btn btn-secondary" style={{ width: '100%' }} onClick={() => coverInputRef.current?.click()}>
-                  Choose Image…
+                  Choose Cover Image…
                 </button>
               </div>
             </div>
+
             <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
               <button type="button" className="btn btn-secondary" onClick={() => setEditingItem(null)}>Cancel</button>
-              <button type="submit" className="btn btn-primary">Save Tags</button>
+              <button type="submit" className="btn btn-primary">Save Changes</button>
             </div>
           </form>
         </div>

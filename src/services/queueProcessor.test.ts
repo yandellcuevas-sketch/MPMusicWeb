@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { QueueProcessor } from './queueProcessor';
+import { QueueProcessor, canProcessItem } from './queueProcessor';
 import { db } from '../db/database';
 import { mediaRegistry } from './mediaAssetRegistry';
 import { mediaProcessor } from './wasmMediaProcessor';
@@ -57,10 +57,15 @@ vi.mock('./metadataService', () => {
   };
 });
 
-function createMockItem(id: string, status: CartItem['status'] = 'pending'): CartItem {
+function createMockItem(
+  id: string,
+  status: CartItem['status'] = 'pending',
+  source: CartItem['source'] = 'local',
+  allowProcessing = true
+): CartItem {
   return {
     id,
-    source: 'local',
+    source,
     title: `Title ${id}`,
     artist: `Artist ${id}`,
     artistNormalized: `artist ${id}`,
@@ -68,6 +73,7 @@ function createMockItem(id: string, status: CartItem['status'] = 'pending'): Car
     outputFormat: 'mp3',
     quality: '320',
     status,
+    allowProcessing,
     addedAt: Date.now(),
   };
 }
@@ -82,7 +88,32 @@ describe('QueueProcessor', () => {
     processor = new QueueProcessor();
   });
 
-  it('runs transcode when file is local', async () => {
+  describe('canProcessItem validation', () => {
+    it('returns false for items with status source_required', () => {
+      const item = createMockItem('sr_1', 'source_required');
+      expect(canProcessItem(item)).toBe(false);
+      expect(processor.canProcess(item)).toBe(false);
+    });
+
+    it('returns false for YouTube items without local file attachment', () => {
+      const item = createMockItem('yt_1', 'source_required', 'youtube', false);
+      expect(canProcessItem(item)).toBe(false);
+    });
+
+    it('returns true for local items when binary exists in mediaRegistry', () => {
+      const item = createMockItem('loc_1', 'pending', 'local', true);
+      mediaRegistry.registerLocalFile('loc_1', new File(['audio'], 'loc.mp3'));
+      expect(canProcessItem(item)).toBe(true);
+    });
+
+    it('returns true for direct items with a sourceUrl', () => {
+      const item = createMockItem('dir_1', 'pending', 'direct', true);
+      item.sourceUrl = 'https://example.com/audio.mp3';
+      expect(canProcessItem(item)).toBe(true);
+    });
+  });
+
+  it('runs transcode when file is local and available', async () => {
     const item = createMockItem('item_1', 'pending');
     mockCartItems = [item];
 
@@ -97,20 +128,20 @@ describe('QueueProcessor', () => {
     expect(db.history.put).toHaveBeenCalled();
   });
 
-  it('sets failed status on processing exception', async () => {
-    const item = createMockItem('item_err', 'pending');
-    mockCartItems = [item];
+  it('skips preview-only items and does not fail them when processNext runs', async () => {
+    const ytItem = createMockItem('yt_preview', 'source_required', 'youtube', false);
+    const localItem = createMockItem('local_ready', 'pending', 'local', true);
 
-    // No file registered in mediaRegistry -> will trigger an error
-    await processor.processItem(item);
+    mockCartItems = [ytItem, localItem];
+    mediaRegistry.registerLocalFile('local_ready', new File(['audio'], 'local.mp3'));
 
-    expect(db.cart.update).toHaveBeenCalledWith(
-      'item_err',
-      expect.objectContaining({
-        status: 'failed',
-        errorMessage: expect.stringContaining('not found'),
-      })
-    );
+    await processor.startProcessing();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // localItem must be processed
+    expect(localItem.status).toBe('ready');
+    // ytItem must remain in source_required status (not failed!)
+    expect(ytItem.status).toBe('source_required');
   });
 
   describe('Scoped Processing Lifecycle & Scope Isolation', () => {

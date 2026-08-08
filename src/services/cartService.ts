@@ -23,26 +23,34 @@ export function parseFilename(filename: string): { title: string; artist: string
  */
 export function getMediaDuration(file: File): Promise<number> {
   return new Promise((resolve) => {
-    const objectUrl = URL.createObjectURL(file);
-    const audio = new Audio();
-    audio.src = objectUrl;
-
-    const cleanup = () => {
-      URL.revokeObjectURL(objectUrl);
-      audio.onloadedmetadata = null;
-      audio.onerror = null;
-    };
-
-    audio.onloadedmetadata = () => {
-      const duration = audio.duration;
-      cleanup();
-      resolve(isNaN(duration) || duration === Infinity ? 0 : duration);
-    };
-
-    audio.onerror = () => {
-      cleanup();
+    if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function' || typeof Audio === 'undefined') {
       resolve(0);
-    };
+      return;
+    }
+    try {
+      const objectUrl = URL.createObjectURL(file);
+      const audio = new Audio();
+      audio.src = objectUrl;
+
+      const cleanup = () => {
+        try { URL.revokeObjectURL(objectUrl); } catch {}
+        audio.onloadedmetadata = null;
+        audio.onerror = null;
+      };
+
+      audio.onloadedmetadata = () => {
+        const duration = audio.duration;
+        cleanup();
+        resolve(isNaN(duration) || duration === Infinity ? 0 : duration);
+      };
+
+      audio.onerror = () => {
+        cleanup();
+        resolve(0);
+      };
+    } catch {
+      resolve(0);
+    }
   });
 }
 
@@ -79,30 +87,53 @@ export class CartService {
 
   /**
    * Adds an item to the persistent cart. If it has a local file, registers it in memory.
-   * Always ensures artistNormalized is populated.
+   * If allowProcessing is false, sets status to 'source_required'.
    */
   async addToCart(
-    itemData: Omit<CartItem, 'addedAt' | 'status' | 'artistNormalized'>,
+    itemData: Omit<CartItem, 'addedAt' | 'status' | 'artistNormalized'> & { status?: CartItem['status'] },
     file?: File
   ): Promise<string> {
     const id = itemData.id;
     const addedAt = Date.now();
 
+    const status: CartItem['status'] =
+      itemData.status || (itemData.allowProcessing === false ? 'source_required' : 'pending');
+
     const newItem: CartItem = {
       ...itemData,
       artistNormalized: normalizeArtist(itemData.artist),
       addedAt,
-      status: 'pending',
+      status,
+      allowProcessing: itemData.allowProcessing !== false,
     };
 
-    // If file provided, register in memory
+    // If file provided, register in memory and ensure it's processable
     if (file) {
       mediaRegistry.registerLocalFile(id, file);
       newItem.fileSizeEstimate = file.size;
+      newItem.status = 'pending';
+      newItem.allowProcessing = true;
     }
 
     await db.cart.put(newItem);
     return id;
+  }
+
+  /**
+   * Attaches a real local audio/video file to an existing item (e.g. a YouTube preview-only item).
+   * This upgrades the item to fully processable ('pending').
+   */
+  async attachLocalFile(id: string, file: File): Promise<void> {
+    mediaRegistry.registerLocalFile(id, file);
+    const duration = await getMediaDuration(file);
+    await db.cart.update(id, {
+      source: 'local',
+      status: 'pending',
+      allowProcessing: true,
+      fileSizeEstimate: file.size,
+      duration: duration > 0 ? duration : undefined,
+      errorMessage: undefined,
+    });
   }
 
   /**
@@ -143,6 +174,7 @@ export class CartService {
         duration,
         outputFormat,
         quality: '320',
+        allowProcessing: true,
       },
       file
     );

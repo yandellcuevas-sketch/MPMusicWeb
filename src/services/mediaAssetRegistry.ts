@@ -23,6 +23,13 @@ class MediaAssetRegistry {
   }
 
   /**
+   * Check if a local file is registered in memory.
+   */
+  hasLocalFile(id: string): boolean {
+    return this.localFiles.has(id);
+  }
+
+  /**
    * Remove local file reference.
    */
   removeLocalFile(id: string) {

@@ -4,11 +4,36 @@ import { mediaRegistry } from './mediaAssetRegistry';
 import { mediaProcessor } from './wasmMediaProcessor';
 import { writeMetadata } from './metadataService'; // Placeholder for Phase 4
 
+/**
+ * Checks if a CartItem has an available media source to transcode.
+ */
+export function canProcessItem(item: CartItem): boolean {
+  if (item.status === 'source_required') return false;
+  if (item.allowProcessing === false) return false;
+  if (item.source === 'local') {
+    return mediaRegistry.hasLocalFile(item.id);
+  }
+  if (item.source === 'direct' && item.sourceUrl) {
+    return true;
+  }
+  if (item.source === 'youtube') {
+    return mediaRegistry.hasLocalFile(item.id);
+  }
+  return false;
+}
+
 export class QueueProcessor {
   private activeCount = 0;
   private running = false;
   private cancelFlags = new Map<string, boolean>();
   private activeScopeIds: Set<string> | null = null;
+
+  /**
+   * Checks whether a CartItem can be processed by FFmpeg.
+   */
+  canProcess(item: CartItem): boolean {
+    return canProcessItem(item);
+  }
 
   /**
    * Starts processing the cart queue.
@@ -66,15 +91,21 @@ export class QueueProcessor {
     const id = item.id;
     this.cancelFlags.set(id, false);
 
+    // Validate that input data is available before invoking FFmpeg
+    if (!this.canProcess(item)) {
+      await db.cart.update(id, {
+        status: 'source_required',
+        errorMessage: 'Source file required before processing. Attach a local audio/video file.',
+      });
+      return;
+    }
+
     try {
       // 1. Fetch direct URL file or load from memory registry
       let inputData: File | Blob | null = null;
 
-      if (item.source === 'local') {
+      if (item.source === 'local' || item.source === 'youtube') {
         inputData = mediaRegistry.getLocalFile(id) || null;
-        if (!inputData) {
-          throw new Error('Local file source not found in memory. Please re-import.');
-        }
       } else if (item.source === 'direct' && item.sourceUrl) {
         // Update status to preparing (fetching remote file)
         await db.cart.update(id, { status: 'preparing', progress: 0 });
@@ -90,7 +121,11 @@ export class QueueProcessor {
       }
 
       if (!inputData) {
-        throw new Error('No input data available to process.');
+        await db.cart.update(id, {
+          status: 'source_required',
+          errorMessage: 'Source file required before processing. Attach a local audio/video file.',
+        });
+        return;
       }
 
       // Check for cancellation
@@ -195,6 +230,9 @@ export class QueueProcessor {
     if (this.activeScopeIds) {
       pendingItems = pendingItems.filter(item => this.activeScopeIds!.has(item.id));
     }
+
+    // Filter to only items that can actually be processed (have media source)
+    pendingItems = pendingItems.filter(item => this.canProcess(item));
 
     if (pendingItems.length === 0) {
       if (this.activeCount === 0) {

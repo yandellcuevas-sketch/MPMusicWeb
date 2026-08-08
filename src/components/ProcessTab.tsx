@@ -1,9 +1,10 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/database';
 import type { CartItem } from '../db/database';
-import { queueProcessor } from '../services/queueProcessor';
-import { Loader2, Play, AlertCircle, CheckCircle, XCircle, Trash2, ShieldAlert, X } from 'lucide-react';
+import { queueProcessor, canProcessItem } from '../services/queueProcessor';
+import { cartService } from '../services/cartService';
+import { Loader2, Play, AlertCircle, CheckCircle, XCircle, Trash2, ShieldAlert, X, Upload, Info } from 'lucide-react';
 
 interface ProcessTabProps {
   showToast: (message: string, type: 'success' | 'info' | 'error') => void;
@@ -18,6 +19,10 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
 }) => {
   const items = useLiveQuery(() => db.cart.orderBy('addedAt').toArray()) || [];
   const [concurrency, setConcurrency] = useState(2);
+
+  // File attachment handler
+  const [attachTargetId, setAttachTargetId] = useState<string | null>(null);
+  const attachInputRef = useRef<HTMLInputElement>(null);
 
   // Sync settings concurrency
   useEffect(() => {
@@ -65,42 +70,40 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
     return items;
   }, [items, isScoped, validSelectedIds]);
 
+  // Divide into processable vs source required
+  const processableItems = useMemo(
+    () => displayItems.filter((item) => canProcessItem(item)),
+    [displayItems]
+  );
+  const sourceRequiredItems = useMemo(
+    () => displayItems.filter((item) => !canProcessItem(item)),
+    [displayItems]
+  );
+
   const startQueue = async () => {
-    const targetItems = displayItems;
-    if (targetItems.length === 0) {
-      showToast('No tracks selected to process.', 'error');
+    if (processableItems.length === 0) {
+      showToast('No processable tracks in selection. Attach a local audio file to YouTube preview tracks first.', 'error');
       return;
     }
 
     showToast(
       isScoped
-        ? `Starting processing for ${targetItems.length} selected tracks...`
-        : 'Starting processing queue...',
+        ? `Starting processing for ${processableItems.length} processable tracks...`
+        : `Starting processing queue for ${processableItems.length} tracks...`,
       'info'
     );
 
-    // Prepare ONLY the target items: reset failed/cancelled/pending to pending
+    // Prepare ONLY the processable items: reset failed/cancelled/pending to pending
     await db.transaction('rw', db.cart, async () => {
-      for (const item of targetItems) {
+      for (const item of processableItems) {
         if (['failed', 'cancelled', 'pending'].includes(item.status)) {
-          // If YouTube item has no direct URL, mark it as failed immediately
-          if (item.source === 'youtube' && !item.sourceUrl) {
-            await db.cart.update(item.id, {
-              status: 'failed',
-              errorMessage: 'YouTube direct media downloads not supported natively. Link to a local file.',
-            });
-          } else {
-            await db.cart.update(item.id, { status: 'pending', progress: 0, errorMessage: undefined });
-          }
+          await db.cart.update(item.id, { status: 'pending', progress: 0, errorMessage: undefined });
         }
       }
     });
 
-    if (isScoped && validSelectedIds) {
-      await queueProcessor.startProcessing(validSelectedIds);
-    } else {
-      await queueProcessor.startProcessing();
-    }
+    const targetIds = processableItems.map((i) => i.id);
+    await queueProcessor.startProcessing(targetIds);
   };
 
   const cancelQueue = async () => {
@@ -116,7 +119,30 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
     showToast(`Cleared ${readyItems.length} completed items.`, 'success');
   };
 
-  // Queue progress aggregates computed strictly on the active scope (displayItems)
+  const triggerAttachFile = (itemId: string) => {
+    setAttachTargetId(itemId);
+    if (attachInputRef.current) {
+      attachInputRef.current.value = '';
+      attachInputRef.current.click();
+    }
+  };
+
+  const handleFileAttachChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0] && attachTargetId) {
+      const file = e.target.files[0];
+      const targetItem = items.find((i) => i.id === attachTargetId);
+      try {
+        await cartService.attachLocalFile(attachTargetId, file);
+        showToast(`Attached "${file.name}" to "${targetItem?.title || 'track'}". Ready for processing!`, 'success');
+      } catch {
+        showToast('Failed to attach source file.', 'error');
+      } finally {
+        setAttachTargetId(null);
+      }
+    }
+  };
+
+  // Queue progress aggregates computed strictly on processable items in current view
   const queueStats = useMemo(() => {
     const total = displayItems.length;
     const ready = displayItems.filter((i) => i.status === 'ready').length;
@@ -148,8 +174,12 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
     }
   }, [isScoped, queueStats]);
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
+  const getStatusIcon = (item: CartItem) => {
+    if (!canProcessItem(item)) {
+      return <AlertCircle size={18} style={{ color: 'var(--warning)' }} />;
+    }
+
+    switch (item.status) {
       case 'ready':
         return <CheckCircle size={18} style={{ color: 'var(--success)' }} />;
       case 'failed':
@@ -166,6 +196,10 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
   };
 
   const getStatusLabel = (item: CartItem) => {
+    if (!canProcessItem(item)) {
+      return 'Source file required';
+    }
+
     switch (item.status) {
       case 'ready':
         return 'Ready';
@@ -186,8 +220,17 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
 
   return (
     <div className="process-tab animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* Hidden file input for attaching source */}
+      <input
+        type="file"
+        ref={attachInputRef}
+        style={{ display: 'none' }}
+        accept="audio/*,video/*,.mp3,.mp4,.wav,.flac,.m4a,.webm,.ogg"
+        onChange={handleFileAttachChange}
+      />
+
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '16px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '16px' }}>
         <div>
           <h1 style={{ margin: '0' }}>Processing Center</h1>
           <p style={{ color: 'var(--text-secondary)' }}>Transcode audio files and write tags client-side using WebAssembly.</p>
@@ -220,8 +263,13 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
                 Cancel All
               </button>
             ) : (
-              <button className="btn btn-primary" onClick={startQueue} disabled={displayItems.length === 0}>
-                <Play size={16} /> {isScoped ? `Process ${displayItems.length} Selected` : 'Process Queue'}
+              <button
+                className="btn btn-primary"
+                onClick={startQueue}
+                disabled={processableItems.length === 0}
+                title={processableItems.length === 0 ? 'Attach local audio files to preview tracks first' : 'Start conversion queue'}
+              >
+                <Play size={16} /> {isScoped ? `Process ${processableItems.length} Selected` : `Process ${processableItems.length} Processable`}
               </button>
             )}
           </div>
@@ -233,7 +281,7 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
         <div
           className="card animate-slide-down"
           style={{
-            marginBottom: '18px',
+            marginBottom: '14px',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
@@ -247,7 +295,7 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
               PROCESSING SELECTION ({displayItems.length} tracks)
             </div>
             <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>
-              Queue actions will strictly affect these selected tracks. Other cart items are ignored.
+              {processableItems.length} ready to process • {sourceRequiredItems.length} require a source file
             </div>
           </div>
           {onClearSelection && (
@@ -262,9 +310,31 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
         </div>
       )}
 
+      {/* Source Required Info Banner */}
+      {sourceRequiredItems.length > 0 && (
+        <div
+          className="card animate-slide-down"
+          style={{
+            marginBottom: '18px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            backgroundColor: 'rgba(245, 158, 11, 0.08)',
+            borderColor: 'rgba(245, 158, 11, 0.25)',
+            padding: '10px 16px',
+          }}
+        >
+          <Info size={18} style={{ color: 'var(--warning)', flexShrink: 0 }} />
+          <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+            <strong>{sourceRequiredItems.length} track{sourceRequiredItems.length > 1 ? 's' : ''} require a source file</strong> before they can be processed.
+            Click <em>"Attach file"</em> on any track below to link your local audio or video file.
+          </div>
+        </div>
+      )}
+
       {/* General Progress Bar */}
       {displayItems.length > 0 && (
-        <div className="card" style={{ marginBottom: '24px', backgroundColor: '#0c0c0c' }}>
+        <div className="card" style={{ marginBottom: '20px', backgroundColor: '#0c0c0c' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px' }}>
             <span>Conversion Progress</span>
             <span style={{ fontWeight: '700', color: 'var(--accent)' }}>
@@ -287,84 +357,104 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
       {/* Queue items list */}
       <div style={{ flexGrow: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
         {displayItems.length > 0 ? (
-          displayItems.map((item) => (
-            <div
-              key={item.id}
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                padding: '14px 18px',
-                borderRadius: '8px',
-                backgroundColor: isScoped ? 'rgba(204,255,0,0.03)' : 'var(--bg-card)',
-                border: `1px solid ${isScoped ? 'rgba(204,255,0,0.18)' : 'var(--border-subtle)'}`,
-                transition: 'border-color 0.2s ease',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                {getStatusIcon(item.status)}
-                
-                <div style={{ flexGrow: 1, overflow: 'hidden' }}>
-                  <div style={{ fontWeight: '600', fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {item.title}
-                  </div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                    {item.artist} • <span style={{ fontWeight: '500' }}>{item.outputFormat.toUpperCase()}</span>
-                  </div>
-                </div>
+          displayItems.map((item) => {
+            const needsSource = !canProcessItem(item);
 
+            return (
+              <div
+                key={item.id}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  padding: '14px 18px',
+                  borderRadius: '8px',
+                  backgroundColor: needsSource ? 'rgba(245, 158, 11, 0.03)' : (isScoped ? 'rgba(204,255,0,0.03)' : 'var(--bg-card)'),
+                  border: `1px solid ${needsSource ? 'rgba(245, 158, 11, 0.2)' : (isScoped ? 'rgba(204,255,0,0.18)' : 'var(--border-subtle)')}`,
+                  transition: 'border-color 0.2s ease',
+                }}
+              >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                  <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)' }}>
-                    {getStatusLabel(item)}
-                  </span>
+                  {getStatusIcon(item)}
                   
-                  {['preparing', 'processing', 'tagging', 'pending'].includes(item.status) && (
-                    <button 
-                      className="btn btn-secondary btn-icon-only" 
-                      onClick={() => queueProcessor.cancelTask(item.id)}
-                      title="Cancel Task"
-                    >
-                      <XCircle size={14} />
-                    </button>
-                  )}
-                </div>
-              </div>
+                  <div style={{ flexGrow: 1, overflow: 'hidden' }}>
+                    <div style={{ fontWeight: '600', fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {item.title}
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                      {item.artist} • <span style={{ fontWeight: '500' }}>{item.outputFormat.toUpperCase()}</span>
+                      {needsSource && (
+                        <span style={{ marginLeft: '8px', color: 'var(--warning)', fontSize: '11px' }}>
+                          • Preview Only (Source Required)
+                        </span>
+                      )}
+                    </div>
+                  </div>
 
-              {/* Progress detail bar for active items */}
-              {['processing', 'preparing'].includes(item.status) && (
-                <div style={{ marginTop: '12px', height: '3px', backgroundColor: 'var(--bg-hover)', borderRadius: '2px', overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <span style={{ fontSize: '13px', fontWeight: '500', color: needsSource ? 'var(--warning)' : 'var(--text-secondary)' }}>
+                      {getStatusLabel(item)}
+                    </span>
+
+                    {needsSource && (
+                      <button
+                        className="btn btn-secondary"
+                        style={{ fontSize: '12px', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                        onClick={() => triggerAttachFile(item.id)}
+                        title="Attach local audio/video file"
+                      >
+                        <Upload size={12} /> Attach file
+                      </button>
+                    )}
+                    
+                    {['preparing', 'processing', 'tagging', 'pending'].includes(item.status) && (
+                      <button 
+                        className="btn btn-secondary btn-icon-only" 
+                        onClick={() => queueProcessor.cancelTask(item.id)}
+                        title="Cancel Task"
+                      >
+                        <XCircle size={14} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Progress detail bar for active items */}
+                {['processing', 'preparing'].includes(item.status) && (
+                  <div style={{ marginTop: '12px', height: '3px', backgroundColor: 'var(--bg-hover)', borderRadius: '2px', overflow: 'hidden' }}>
+                    <div 
+                      style={{ 
+                        height: '100%', 
+                        backgroundColor: 'var(--accent)', 
+                        width: `${item.progress ?? 0}%`,
+                        transition: 'width 0.15s ease'
+                      }} 
+                    />
+                  </div>
+                )}
+
+                {/* Error explanation */}
+                {item.status === 'failed' && item.errorMessage && (
                   <div 
                     style={{ 
-                      height: '100%', 
-                      backgroundColor: 'var(--accent)', 
-                      width: `${item.progress ?? 0}%`,
-                      transition: 'width 0.15s ease'
-                    }} 
-                  />
-                </div>
-              )}
-
-              {/* Error explanation */}
-              {item.status === 'failed' && item.errorMessage && (
-                <div 
-                  style={{ 
-                    marginTop: '8px', 
-                    padding: '8px 12px', 
-                    backgroundColor: 'rgba(239, 68, 68, 0.1)', 
-                    border: '1px solid rgba(239, 68, 68, 0.2)',
-                    borderRadius: '4px',
-                    fontSize: '12px',
-                    color: 'var(--danger)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px'
-                  }}
-                >
-                  <ShieldAlert size={14} style={{ flexShrink: 0 }} />
-                  <span>{item.errorMessage}</span>
-                </div>
-              )}
-            </div>
-          ))
+                      marginTop: '8px', 
+                      padding: '8px 12px', 
+                      backgroundColor: 'rgba(239, 68, 68, 0.1)', 
+                      border: '1px solid rgba(239, 68, 68, 0.2)',
+                      borderRadius: '4px',
+                      fontSize: '12px',
+                      color: 'var(--danger)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px'
+                    }}
+                  >
+                    <ShieldAlert size={14} style={{ flexShrink: 0 }} />
+                    <span>{item.errorMessage}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })
         ) : (
           <div className="empty-state">
             <Loader2 size={48} className="empty-state-icon" />

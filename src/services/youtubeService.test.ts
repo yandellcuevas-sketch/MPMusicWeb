@@ -38,16 +38,17 @@ describe('youtubeService', () => {
     });
   });
 
-  describe('resolveUrl', () => {
-    it('correctly parses YouTube links and returns stub info without API key', async () => {
+  describe('resolveUrl & allowProcessing status', () => {
+    it('correctly parses YouTube links and marks allowProcessing as false', async () => {
       const ytUrl = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
       const result = await youtubeService.resolveUrl(ytUrl);
       expect(result).not.toBeNull();
       expect(result?.id).toBe('dQw4w9WgXcQ');
       expect(result?.source).toBe('youtube');
+      expect(result?.allowProcessing).toBe(false);
     });
 
-    it('correctly resolves direct audio URLs', async () => {
+    it('correctly resolves direct audio URLs and marks allowProcessing as true', async () => {
       const directUrl = 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3';
       const result = await youtubeService.resolveUrl(directUrl);
       expect(result).not.toBeNull();

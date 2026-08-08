@@ -17,7 +17,8 @@ export interface CartItem {
   addedAt: number;
   outputFormat: 'mp3' | 'mp4' | 'wav' | 'flac' | 'm4a';
   quality: '128' | '192' | '256' | '320';
-  status: 'pending' | 'preparing' | 'processing' | 'tagging' | 'ready' | 'failed' | 'cancelled';
+  status: 'pending' | 'preparing' | 'processing' | 'tagging' | 'ready' | 'failed' | 'cancelled' | 'source_required';
+  allowProcessing?: boolean;
   progress?: number;
   errorMessage?: string;
   fileSizeEstimate?: number; // estimated size in bytes

@@ -4,7 +4,7 @@ import { db } from '../db/database';
 import { youtubeService } from '../services/youtubeService';
 import type { SearchResult } from '../services/youtubeService';
 import { cartService } from '../services/cartService';
-import { Search, Plus, Play, Pause, Copy, Link, AlertTriangle, X, Check, Music } from 'lucide-react';
+import { Search, Plus, Play, Pause, Copy, Link, AlertTriangle, X, Check, Music, Video, Info } from 'lucide-react';
 
 interface SearchTabProps {
   onPlayPreview: (track: { id: string; title: string; artist: string; thumbnailUrl: string; previewUrl: string }) => void;
@@ -17,13 +17,20 @@ export const SearchTab: React.FC<SearchTabProps> = ({
   onPlayPreview,
   currentPlayingId,
   isPlaying,
-  showToast
+  showToast,
 }) => {
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [directUrl, setDirectUrl] = useState('');
   const [resolvingUrl, setResolvingUrl] = useState(false);
+
+  // YouTube modal preview
+  const [youtubePreviewModal, setYoutubePreviewModal] = useState<{
+    videoId: string;
+    title: string;
+    artist: string;
+  } | null>(null);
   
   // Modal states for duplicate handling
   const [duplicateConflict, setDuplicateConflict] = useState<{
@@ -107,10 +114,16 @@ export const SearchTab: React.FC<SearchTabProps> = ({
       thumbnailUrl: track.thumbnailUrl,
       duration: track.duration,
       outputFormat: 'mp3',
-      quality: '320'
+      quality: '320',
+      allowProcessing: track.allowProcessing,
+      status: track.allowProcessing ? 'pending' : 'source_required',
     });
 
-    showToast(`"${finalTitle}" added to Cart`, 'success');
+    if (track.allowProcessing) {
+      showToast(`"${finalTitle}" added to Cart (ready to process)`, 'success');
+    } else {
+      showToast(`"${finalTitle}" added as Preview (attach local file in Cart/Queue to convert)`, 'info');
+    }
     setDuplicateConflict(null);
   };
 
@@ -152,7 +165,7 @@ export const SearchTab: React.FC<SearchTabProps> = ({
       </div>
 
       {/* Main Search Bar */}
-      <div style={{ position: 'relative', marginBottom: '32px' }}>
+      <div style={{ position: 'relative', marginBottom: '24px' }}>
         <input
           type="text"
           className="input"
@@ -162,6 +175,27 @@ export const SearchTab: React.FC<SearchTabProps> = ({
           onChange={(e) => setQuery(e.target.value)}
         />
         <Search size={20} style={{ position: 'absolute', left: '16px', top: '14px', color: 'var(--text-muted)' }} />
+      </div>
+
+      {/* Discovery & Processing notice */}
+      <div
+        className="card"
+        style={{
+          padding: '12px 18px',
+          marginBottom: '24px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '12px',
+          backgroundColor: 'rgba(204, 255, 0, 0.04)',
+          borderColor: 'rgba(204, 255, 0, 0.15)',
+        }}
+      >
+        <Info size={18} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+        <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: 0 }}>
+          <strong>Discovery Mode:</strong> YouTube results provide metadata and official video preview.
+          To convert a YouTube selection to MP3/WAV/FLAC, attach your corresponding local audio/video file in the Cart or Queue.
+          Direct copyright-free tracks are immediately processable.
+        </p>
       </div>
 
       {/* Search Status & Warning */}
@@ -205,6 +239,7 @@ export const SearchTab: React.FC<SearchTabProps> = ({
           {searchResults.map((track) => {
             const inCart = isAlreadyInCart(track.id);
             const isCurrentPlaying = currentPlayingId === track.id;
+            const isYouTube = track.source === 'youtube';
             
             return (
               <div key={track.id} className="card" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -217,9 +252,7 @@ export const SearchTab: React.FC<SearchTabProps> = ({
                       style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover' }}
                     />
                   ) : (
-                    <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-                      <Music size={32} />
-                    </div>
+                    <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}><Music size={32} /></div>
                   )}
                   {track.duration > 0 && (
                     <div style={{ position: 'absolute', bottom: '8px', right: '8px', backgroundColor: 'rgba(0,0,0,0.8)', padding: '2px 6px', borderRadius: '4px', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>
@@ -233,13 +266,13 @@ export const SearchTab: React.FC<SearchTabProps> = ({
                     left: '8px', 
                     fontSize: '10px', 
                     fontWeight: '700',
-                    backgroundColor: track.source === 'youtube' ? '#ff0000' : 'var(--accent)',
-                    color: track.source === 'youtube' ? '#ffffff' : 'var(--bg-deep)',
+                    backgroundColor: isYouTube ? '#ff0000' : 'var(--accent)',
+                    color: isYouTube ? '#ffffff' : 'var(--bg-deep)',
                     padding: '2px 6px',
                     borderRadius: '4px',
                     textTransform: 'uppercase'
                   }}>
-                    {track.source}
+                    {isYouTube ? 'YouTube • Preview only' : track.source}
                   </span>
                 </div>
 
@@ -258,9 +291,21 @@ export const SearchTab: React.FC<SearchTabProps> = ({
 
                 {/* Actions */}
                 <div style={{ display: 'flex', gap: '8px', marginTop: 'auto' }}>
-                  {track.previewUrl ? (
+                  {isYouTube ? (
                     <button
-                      className={`btn btn-secondary btn-icon-only`}
+                      className="btn btn-secondary btn-icon-only"
+                      onClick={() => setYoutubePreviewModal({
+                        videoId: track.id,
+                        title: track.title,
+                        artist: track.artist,
+                      })}
+                      title="Watch YouTube preview"
+                    >
+                      <Video size={14} />
+                    </button>
+                  ) : track.previewUrl ? (
+                    <button
+                      className="btn btn-secondary btn-icon-only"
                       onClick={() => onPlayPreview({
                         id: track.id,
                         title: track.title,
@@ -268,19 +313,19 @@ export const SearchTab: React.FC<SearchTabProps> = ({
                         thumbnailUrl: track.thumbnailUrl,
                         previewUrl: track.previewUrl!
                       })}
-                      title="Preview track"
+                      title="Preview audio track"
                     >
                       {isCurrentPlaying && isPlaying ? <Pause size={14} /> : <Play size={14} />}
                     </button>
                   ) : (
-                    <div style={{ width: '36px' }} /> // Spacer
+                    <div style={{ width: '36px' }} />
                   )}
                   
                   <button
                     className={`btn ${inCart ? 'btn-secondary' : 'btn-primary'}`}
                     style={{ flexGrow: 1 }}
                     onClick={() => checkAndAdd(track)}
-                    disabled={inCart && track.source === 'youtube'}
+                    disabled={inCart}
                   >
                     {inCart ? (
                       <>
@@ -288,7 +333,7 @@ export const SearchTab: React.FC<SearchTabProps> = ({
                       </>
                     ) : (
                       <>
-                        <Plus size={14} /> Add
+                        <Plus size={14} /> {isYouTube ? 'Add to Selection' : 'Add'}
                       </>
                     )}
                   </button>
@@ -310,6 +355,45 @@ export const SearchTab: React.FC<SearchTabProps> = ({
           <Search size={48} className="empty-state-icon" />
           <div className="empty-state-title">No results found</div>
           <p>Try typing in another search query or check your settings.</p>
+        </div>
+      )}
+
+      {/* Official YouTube Embed Preview Modal */}
+      {youtubePreviewModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.85)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000,
+          padding: '20px'
+        }}>
+          <div className="card" style={{ maxWidth: '640px', width: '100%', position: 'relative' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '15px' }}>{youtubePreviewModal.title}</h3>
+                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{youtubePreviewModal.artist}</span>
+              </div>
+              <button 
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+                onClick={() => setYoutubePreviewModal(null)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div style={{ position: 'relative', width: '100%', paddingTop: '56.25%', borderRadius: '8px', overflow: 'hidden', backgroundColor: '#000' }}>
+              <iframe
+                title="YouTube Preview"
+                src={`https://www.youtube-nocookie.com/embed/${youtubePreviewModal.videoId}?autoplay=1`}
+                style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', border: 'none' }}
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+              />
+            </div>
+          </div>
         </div>
       )}
 
