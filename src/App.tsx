@@ -10,6 +10,7 @@ import { UsbTab } from './components/UsbTab';
 import { HistoryTab } from './components/HistoryTab';
 import { SettingsTab } from './components/SettingsTab';
 import { Player } from './components/Player';
+import { ArtistsTab } from './components/ArtistsTab';
 import { initializeSettings } from './db/database';
 
 interface ToastMessage {
@@ -87,6 +88,14 @@ const App: React.FC = () => {
       case 'playlists':
         return (
           <PlaylistsTab
+            onNavigate={setActiveTab}
+            onPlayPreview={handlePlayPreview}
+            showToast={showToast}
+          />
+        );
+      case 'artists':
+        return (
+          <ArtistsTab
             onNavigate={setActiveTab}
             onPlayPreview={handlePlayPreview}
             showToast={showToast}

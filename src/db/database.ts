@@ -7,6 +7,7 @@ export interface CartItem {
   sourceUrl?: string;
   title: string;
   artist: string;
+  artistNormalized: string; // Lowercased, trimmed — for grouping/filtering
   album?: string;
   year?: string;
   genre?: string;
@@ -33,6 +34,7 @@ export interface HistoryEntry {
   id: string;
   title: string;
   artist: string;
+  artistNormalized: string; // For filtering
   source: 'youtube' | 'local' | 'direct';
   format: 'mp3' | 'mp4' | 'wav' | 'flac' | 'm4a';
   quality: '128' | '192' | '256' | '320';
@@ -59,12 +61,44 @@ export class MPMusicWebDatabase extends Dexie {
 
   constructor() {
     super('MPMusicWebDB');
+
+    // v1 — original schema
     this.version(1).stores({
       cart: 'id, source, title, artist, status, addedAt',
       playlists: 'id, name, createdAt',
       history: 'id, title, artist, processedAt, status',
       settings: 'id'
     });
+
+    // v2 — add artistNormalized index on cart and history; add genre index on cart
+    this.version(2)
+      .stores({
+        cart: 'id, source, title, artist, artistNormalized, status, addedAt, genre',
+        playlists: 'id, name, createdAt',
+        history: 'id, title, artist, artistNormalized, processedAt, status',
+        settings: 'id'
+      })
+      .upgrade(async (trans) => {
+        // Backfill artistNormalized for existing cart items
+        await trans
+          .table('cart')
+          .toCollection()
+          .modify((item: CartItem) => {
+            if (!item.artistNormalized) {
+              item.artistNormalized = (item.artist || '').toLowerCase().trim().replace(/\s+/g, ' ');
+            }
+          });
+
+        // Backfill artistNormalized for existing history entries
+        await trans
+          .table('history')
+          .toCollection()
+          .modify((entry: HistoryEntry) => {
+            if (!entry.artistNormalized) {
+              entry.artistNormalized = (entry.artist || '').toLowerCase().trim().replace(/\s+/g, ' ');
+            }
+          });
+      });
   }
 }
 

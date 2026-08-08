@@ -44,13 +44,17 @@ export class WasmMediaProcessor implements MediaProcessor {
     const outputName = `output_${activeTaskId}.${outputFormat}`;
 
     try {
-      // Determine local URL path for the single-threaded WASM core
-      const base = window.location.origin + (import.meta.env.BASE_URL || '/MPMusicWeb/') + 'ffmpeg';
+      // Determine the base URL for the FFmpeg core files.
+      // import.meta.env.BASE_URL is '/' in dev and '/MPMusicWeb/' on Pages.
+      // We strip any trailing slash before appending the subdirectory.
+      const baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '');
+      const base = `${window.location.origin}${baseUrl}/ffmpeg`;
 
       await ffmpeg.load({
         coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
         wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
       });
+
 
       // Write source file to FFmpeg Virtual File System (MEMFS)
       const fileData = await fetchFile(inputFile);

@@ -1,7 +1,7 @@
 import React from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/database';
-import { Home, Music, ShoppingCart, ListMusic, Cpu, HardDrive, History, Settings } from 'lucide-react';
+import { Home, Music, ShoppingCart, ListMusic, Cpu, HardDrive, History, Settings, Users } from 'lucide-react';
 
 interface SidebarProps {
   activeTab: string;
@@ -32,6 +32,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onNavigate }) => {
       badge: badgeCounts?.cartCount && badgeCounts.cartCount > 0 ? badgeCounts.cartCount : undefined 
     },
     { id: 'playlists', label: 'Playlists', icon: <ListMusic size={18} /> },
+    { id: 'artists', label: 'Artists', icon: <Users size={18} /> },
     { 
       id: 'process', 
       label: 'Queue', 

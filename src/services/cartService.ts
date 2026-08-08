@@ -1,6 +1,7 @@
 import { db } from '../db/database';
 import type { CartItem } from '../db/database';
 import { mediaRegistry } from './mediaAssetRegistry';
+import { normalizeArtist } from '../utils/artistUtils';
 
 /**
  * Parses file names to estimate Artist and Title.
@@ -25,7 +26,7 @@ export function getMediaDuration(file: File): Promise<number> {
     const objectUrl = URL.createObjectURL(file);
     const audio = new Audio();
     audio.src = objectUrl;
-    
+
     const cleanup = () => {
       URL.revokeObjectURL(objectUrl);
       audio.onloadedmetadata = null;
@@ -56,8 +57,8 @@ export class CartService {
     sourceId?: string
   ): Promise<CartItem[]> {
     const normalizedTitle = title.toLowerCase().trim();
-    const normalizedArtist = artist.toLowerCase().trim();
-    const toleranceSec = 3; // 3 seconds tolerance
+    const normalizedArtist = normalizeArtist(artist);
+    const toleranceSec = 3;
 
     const allItems = await db.cart.toArray();
 
@@ -69,7 +70,7 @@ export class CartService {
 
       // 2. Match by normalized title/artist and duration close match
       const titleMatch = item.title.toLowerCase().trim() === normalizedTitle;
-      const artistMatch = item.artist.toLowerCase().trim() === normalizedArtist;
+      const artistMatch = normalizeArtist(item.artist) === normalizedArtist;
       const durationMatch = Math.abs(item.duration - duration) <= toleranceSec;
 
       return titleMatch && artistMatch && durationMatch;
@@ -78,9 +79,10 @@ export class CartService {
 
   /**
    * Adds an item to the persistent cart. If it has a local file, registers it in memory.
+   * Always ensures artistNormalized is populated.
    */
   async addToCart(
-    itemData: Omit<CartItem, 'addedAt' | 'status'>,
+    itemData: Omit<CartItem, 'addedAt' | 'status' | 'artistNormalized'>,
     file?: File
   ): Promise<string> {
     const id = itemData.id;
@@ -88,6 +90,7 @@ export class CartService {
 
     const newItem: CartItem = {
       ...itemData,
+      artistNormalized: normalizeArtist(itemData.artist),
       addedAt,
       status: 'pending',
     };
@@ -122,7 +125,6 @@ export class CartService {
     }
 
     if (duplicates.length > 0 && options?.resolveConflict === 'replace') {
-      // Delete existing duplicates
       for (const dup of duplicates) {
         await this.removeFromCart(dup.id);
       }
@@ -155,7 +157,7 @@ export class CartService {
     mediaRegistry.removeLocalFile(id);
     mediaRegistry.removeProcessedBlob(id);
     await db.cart.delete(id);
-    
+
     // Remove reference from playlists
     const playlists = await db.playlists.toArray();
     for (const playlist of playlists) {
@@ -171,7 +173,6 @@ export class CartService {
    */
   async reorderCart(orderedIds: string[]) {
     const now = Date.now();
-    // Update addedAt timestamps incrementally to enforce sorting order
     await db.transaction('rw', db.cart, async () => {
       for (let i = 0; i < orderedIds.length; i++) {
         await db.cart.update(orderedIds[i], { addedAt: now - (orderedIds.length - i) * 1000 });
