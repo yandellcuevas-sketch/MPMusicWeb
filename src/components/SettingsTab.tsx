@@ -23,6 +23,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ showToast }) => {
   const [preset, setPreset] = useState<'universal' | 'car' | 'dj' | 'hq' | 'small' | 'custom'>('universal');
   const [structure, setStructure] = useState<'flat' | 'artist' | 'album' | 'genre' | 'playlist'>('flat');
   const [concurrency, setConcurrency] = useState(2);
+  const [autoProcess, setAutoProcess] = useState(false);
 
   // Storage info
   const [storageEstimate, setStorageEstimate] = useState<{ used: string; total: string; percent: number } | null>(null);
@@ -36,6 +37,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ showToast }) => {
       setPreset(currentSettings.defaultExportPreset);
       setStructure(currentSettings.defaultFolderStructure);
       setConcurrency(currentSettings.concurrencyLimit);
+      setAutoProcess(currentSettings.autoProcessOnResolved || false);
     }
   }, [currentSettings]);
 
@@ -65,7 +67,8 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ showToast }) => {
         defaultQuality: quality,
         defaultExportPreset: preset,
         defaultFolderStructure: structure,
-        concurrencyLimit: concurrency
+        concurrencyLimit: concurrency,
+        autoProcessOnResolved: autoProcess,
       });
       showToast('Settings saved successfully.', 'success');
     } catch {
@@ -226,6 +229,20 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ showToast }) => {
               <option value="3">3 Active Tasks (Fast / Heavy)</option>
               <option value="4">4 Active Tasks (Unstable on weak systems)</option>
             </select>
+          </div>
+
+          {/* Automatic Processing Option */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 0' }}>
+            <input
+              type="checkbox"
+              id="autoProcessToggle"
+              checked={autoProcess}
+              onChange={(e) => setAutoProcess(e.target.checked)}
+              style={{ width: '16px', height: '16px', accentColor: 'var(--accent)', cursor: 'pointer' }}
+            />
+            <label htmlFor="autoProcessToggle" style={{ fontSize: '13px', cursor: 'pointer' }}>
+              Automatically process tracks when audio is resolved (Default: Off)
+            </label>
           </div>
 
           <button type="submit" className="btn btn-primary" style={{ marginTop: '8px' }}>

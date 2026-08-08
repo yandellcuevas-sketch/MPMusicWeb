@@ -8,6 +8,12 @@ vi.mock('../db/database', () => {
     put: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
+    get: vi.fn(async (id: string) => ({
+      id,
+      title: 'Mock Track',
+      artist: 'Mock Artist',
+      resolvedMedia: { mediaUrl: 'https://test.com/audio.mp3', confidence: 0.88 },
+    })),
     toArray: vi.fn(() => []),
     clear: vi.fn(),
   };
@@ -19,6 +25,10 @@ vi.mock('../db/database', () => {
     db: {
       cart: mockCartTable,
       playlists: mockPlaylistsTable,
+      audioResolutions: {
+        get: vi.fn(),
+        put: vi.fn(),
+      },
       transaction: vi.fn((_mode, _tables, cb) => cb()),
     },
   };
@@ -44,7 +54,7 @@ describe('cartService', () => {
     });
   });
 
-  describe('addToCart & Preview-only handling', () => {
+  describe('addToCart & AudioResolver background trigger', () => {
     it('adds local file item to Dexie as pending and registers in memory', async () => {
       const item = {
         id: '123',
@@ -65,13 +75,14 @@ describe('cartService', () => {
           title: 'Song',
           artist: 'Artist',
           status: 'pending',
+          audioResolutionStatus: 'resolved',
           allowProcessing: true,
         })
       );
       expect(mediaRegistry.getLocalFile('123')).toBe(file);
     });
 
-    it('sets status to source_required when allowProcessing is false (e.g. YouTube)', async () => {
+    it('sets audioResolutionStatus to resolving when adding YouTube track', async () => {
       const youtubeItem = {
         id: 'yt_123',
         source: 'youtube' as const,
@@ -80,7 +91,6 @@ describe('cartService', () => {
         duration: 200,
         outputFormat: 'mp3' as const,
         quality: '320' as const,
-        allowProcessing: false,
       };
 
       await cartService.addToCart(youtubeItem);
@@ -88,13 +98,41 @@ describe('cartService', () => {
       expect(db.cart.put).toHaveBeenCalledWith(
         expect.objectContaining({
           id: 'yt_123',
-          status: 'source_required',
-          allowProcessing: false,
+          source: 'youtube',
+          audioResolutionStatus: 'resolving',
         })
       );
     });
 
-    it('attaches local file and upgrades source_required item to processable pending', async () => {
+    it('accepts ambiguous match on user review', async () => {
+      await cartService.acceptResolutionMatch('yt_123');
+
+      expect(db.cart.update).toHaveBeenCalledWith(
+        'yt_123',
+        expect.objectContaining({
+          audioResolutionStatus: 'resolved',
+          allowProcessing: true,
+          status: 'pending',
+          userReviewedMatch: true,
+        })
+      );
+    });
+
+    it('rejects ambiguous match on user review', async () => {
+      await cartService.rejectResolutionMatch('yt_123');
+
+      expect(db.cart.update).toHaveBeenCalledWith(
+        'yt_123',
+        expect.objectContaining({
+          audioResolutionStatus: 'unavailable',
+          allowProcessing: false,
+          status: 'source_required',
+          userReviewedMatch: false,
+        })
+      );
+    });
+
+    it('attaches local file and upgrades to resolved', async () => {
       const id = 'yt_123';
       const file = new File(['audio content'], 'track.mp3');
 
@@ -106,6 +144,7 @@ describe('cartService', () => {
         expect.objectContaining({
           source: 'local',
           status: 'pending',
+          audioResolutionStatus: 'resolved',
           allowProcessing: true,
           fileSizeEstimate: file.size,
         })

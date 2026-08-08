@@ -2,14 +2,12 @@ import { db } from '../db/database';
 import type { CartItem } from '../db/database';
 import { mediaRegistry } from './mediaAssetRegistry';
 import { mediaProcessor } from './wasmMediaProcessor';
-import { writeMetadata } from './metadataService'; // Placeholder for Phase 4
+import { writeMetadata } from './metadataService';
 
 /**
- * Checks if a CartItem has an available media source to transcode.
+ * Checks if a CartItem has an available authorized media source to transcode.
  */
 export function canProcessItem(item: CartItem): boolean {
-  if (item.status === 'source_required') return false;
-  if (item.allowProcessing === false) return false;
   if (item.source === 'local') {
     return mediaRegistry.hasLocalFile(item.id);
   }
@@ -17,7 +15,9 @@ export function canProcessItem(item: CartItem): boolean {
     return true;
   }
   if (item.source === 'youtube') {
-    return mediaRegistry.hasLocalFile(item.id);
+    // Check if local file was attached or if authorized audio resolution was resolved
+    if (mediaRegistry.hasLocalFile(item.id)) return true;
+    return item.audioResolutionStatus === 'resolved' && Boolean(item.resolvedMedia?.mediaUrl);
   }
   return false;
 }
@@ -85,7 +85,7 @@ export class QueueProcessor {
   }
 
   /**
-   * Process individual item.
+   * Process individual item: download remote stream if needed, transcode with FFmpeg, tag ID3, and save to memory registry.
    */
   async processItem(item: CartItem) {
     const id = item.id;
@@ -95,46 +95,61 @@ export class QueueProcessor {
     if (!this.canProcess(item)) {
       await db.cart.update(id, {
         status: 'source_required',
-        errorMessage: 'Source file required before processing. Attach a local audio/video file.',
+        errorMessage: 'Source file required before processing. An authorized audio match could not be found.',
       });
       return;
     }
 
     try {
-      // 1. Fetch direct URL file or load from memory registry
       let inputData: File | Blob | null = null;
 
-      if (item.source === 'local' || item.source === 'youtube') {
+      // 1. Fetch remote audio stream or load local file
+      if (item.source === 'local' || mediaRegistry.hasLocalFile(id)) {
         inputData = mediaRegistry.getLocalFile(id) || null;
-      } else if (item.source === 'direct' && item.sourceUrl) {
-        // Update status to preparing (fetching remote file)
-        await db.cart.update(id, { status: 'preparing', progress: 0 });
-        
-        // Check for cancellation
+      } else {
+        const downloadUrl =
+          item.source === 'direct'
+            ? item.sourceUrl
+            : item.resolvedMedia?.mediaUrl;
+
+        if (!downloadUrl) {
+          throw new Error('No media download URL available.');
+        }
+
+        // Update status to preparing (downloading audio stream)
+        await db.cart.update(id, {
+          status: 'preparing',
+          processingStatus: 'downloading',
+          progress: 0,
+        });
+
         if (this.cancelFlags.get(id)) throw new Error('Task cancelled');
 
-        const response = await fetch(item.sourceUrl);
+        const response = await fetch(downloadUrl);
         if (!response.ok) {
-          throw new Error(`Failed to download remote file: ${response.statusText}`);
+          throw new Error(`Failed to fetch media stream: ${response.status} ${response.statusText}`);
         }
+
         inputData = await response.blob();
       }
 
       if (!inputData) {
         await db.cart.update(id, {
           status: 'source_required',
-          errorMessage: 'Source file required before processing. Attach a local audio/video file.',
+          errorMessage: 'Audio stream could not be loaded.',
         });
         return;
       }
 
-      // Check for cancellation
       if (this.cancelFlags.get(id)) throw new Error('Task cancelled');
 
       // 2. Perform transcoding using WasmMediaProcessor
-      await db.cart.update(id, { status: 'processing', progress: 0 });
+      await db.cart.update(id, {
+        status: 'processing',
+        processingStatus: 'converting',
+        progress: 0,
+      });
 
-      // Run FFmpeg conversion
       const processedBlob = await mediaProcessor.convert(
         inputData,
         item.outputFormat,
@@ -147,15 +162,17 @@ export class QueueProcessor {
         id
       );
 
-      // Check for cancellation
       if (this.cancelFlags.get(id)) throw new Error('Task cancelled');
 
-      // 3. Metadata Tagging (Phase 4 integration)
-      await db.cart.update(id, { status: 'tagging', progress: 95 });
-      
+      // 3. Metadata Tagging (ID3)
+      await db.cart.update(id, {
+        status: 'tagging',
+        processingStatus: 'tagging',
+        progress: 95,
+      });
+
       let taggedBlob = processedBlob;
       try {
-        // Write metadata if output format is MP3
         if (item.outputFormat === 'mp3') {
           taggedBlob = await writeMetadata(id, processedBlob, item);
         }
@@ -163,11 +180,16 @@ export class QueueProcessor {
         console.warn('Metadata tagging failed, using untagged file:', metaErr);
       }
 
-      // Save processed blob in memory
+      // Save processed blob in memory registry
       mediaRegistry.registerProcessedBlob(id, taggedBlob);
 
       // Mark as completed
-      await db.cart.update(id, { status: 'ready', progress: 100 });
+      await db.cart.update(id, {
+        status: 'ready',
+        processingStatus: 'ready',
+        progress: 100,
+        errorMessage: undefined,
+      });
 
       // Save to history audit log
       await db.history.put({
@@ -179,17 +201,21 @@ export class QueueProcessor {
         format: item.outputFormat,
         quality: item.quality,
         processedAt: Date.now(),
-        status: 'success'
+        status: 'success',
       });
-
     } catch (error: any) {
       if (this.cancelFlags.get(id)) {
-        await db.cart.update(id, { status: 'cancelled', progress: 0 });
+        await db.cart.update(id, {
+          status: 'cancelled',
+          processingStatus: 'cancelled',
+          progress: 0,
+        });
       } else {
         console.error(`Error processing item ${id}:`, error);
         await db.cart.update(id, {
           status: 'failed',
-          errorMessage: error?.message || 'Unknown processing error'
+          processingStatus: 'failed',
+          errorMessage: error?.message || 'Unknown processing error',
         });
 
         await db.history.put({
@@ -202,7 +228,7 @@ export class QueueProcessor {
           quality: item.quality,
           processedAt: Date.now(),
           status: 'failed',
-          errorMessage: error?.message || 'Processing error'
+          errorMessage: error?.message || 'Processing error',
         });
       }
     }
@@ -214,7 +240,6 @@ export class QueueProcessor {
   private async processNext() {
     if (!this.running) return;
 
-    // Get current concurrency settings
     const settings = await db.settings.get('current');
     const concurrencyLimit = settings?.concurrencyLimit || 2;
 
@@ -226,37 +251,36 @@ export class QueueProcessor {
       .anyOf('pending', 'failed')
       .sortBy('addedAt');
 
-    // Filter by active scope if scoped processing was requested
     if (this.activeScopeIds) {
-      pendingItems = pendingItems.filter(item => this.activeScopeIds!.has(item.id));
+      pendingItems = pendingItems.filter((item) => this.activeScopeIds!.has(item.id));
     }
 
-    // Filter to only items that can actually be processed (have media source)
-    pendingItems = pendingItems.filter(item => this.canProcess(item));
+    // Filter to only items that can actually be processed
+    pendingItems = pendingItems.filter((item) => this.canProcess(item));
 
     if (pendingItems.length === 0) {
       if (this.activeCount === 0) {
-        this.running = false; // Queue fully finished
-        this.activeScopeIds = null; // Clear scope
+        this.running = false;
+        this.activeScopeIds = null;
       }
       return;
     }
 
     const item = pendingItems[0];
-    
+
     // Lock item by updating status immediately to avoid racing
     await db.cart.update(item.id, { status: 'preparing', progress: 0 });
 
     this.activeCount++;
-    
+
     // Trigger next concurrent items
     this.processNext();
 
     // Process the item asynchronously
     await this.processItem(item);
-    
+
     this.activeCount--;
-    
+
     // Trigger loop continuation
     this.processNext();
   }
@@ -267,12 +291,15 @@ export class QueueProcessor {
   async cancelTask(id: string) {
     this.cancelFlags.set(id, true);
     await mediaProcessor.cancel(id);
-    await db.cart.update(id, { status: 'cancelled', progress: 0 });
+    await db.cart.update(id, {
+      status: 'cancelled',
+      processingStatus: 'cancelled',
+      progress: 0,
+    });
   }
 
   /**
    * Cancels items in the processing queue.
-   * If an active scope is set, cancels only items in that scope.
    */
   async cancelAll() {
     const scopeToCancel = this.activeScopeIds;
@@ -281,7 +308,6 @@ export class QueueProcessor {
 
     const activeAndPending = await db.cart.toArray();
     for (const item of activeAndPending) {
-      // If scope was active, only cancel items belonging to that scope
       if (scopeToCancel && !scopeToCancel.has(item.id)) {
         continue;
       }

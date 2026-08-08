@@ -4,7 +4,7 @@ import { db } from '../db/database';
 import { youtubeService } from '../services/youtubeService';
 import type { SearchResult } from '../services/youtubeService';
 import { cartService } from '../services/cartService';
-import { Search, Plus, Play, Pause, Copy, Link, AlertTriangle, X, Check, Music, Video, Info } from 'lucide-react';
+import { Search, Plus, Play, Pause, Copy, Link, AlertTriangle, X, Check, Music, Video, Sparkles } from 'lucide-react';
 
 interface SearchTabProps {
   onPlayPreview: (track: { id: string; title: string; artist: string; thumbnailUrl: string; previewUrl: string }) => void;
@@ -41,7 +41,7 @@ export const SearchTab: React.FC<SearchTabProps> = ({
   const settings = useLiveQuery(() => db.settings.get('current'));
   const cartItems = useLiveQuery(() => db.cart.toArray()) || [];
 
-  // Search trigger on query/settings change with simple debounce
+  // Search trigger on query/settings change with debounce
   useEffect(() => {
     const delayDebounceFn = setTimeout(() => {
       triggerSearch(query);
@@ -71,7 +71,7 @@ export const SearchTab: React.FC<SearchTabProps> = ({
       if (resolved) {
         setSearchResults((prev) => [resolved, ...prev]);
         setDirectUrl('');
-        showToast('Direct URL resolved successfully!', 'success');
+        showToast('Link resolved successfully!', 'success');
       } else {
         showToast('Invalid or unsupported URL.', 'error');
       }
@@ -116,14 +116,9 @@ export const SearchTab: React.FC<SearchTabProps> = ({
       outputFormat: 'mp3',
       quality: '320',
       allowProcessing: track.allowProcessing,
-      status: track.allowProcessing ? 'pending' : 'source_required',
     });
 
-    if (track.allowProcessing) {
-      showToast(`"${finalTitle}" added to Cart (ready to process)`, 'success');
-    } else {
-      showToast(`"${finalTitle}" added as Preview (attach local file in Cart/Queue to convert)`, 'info');
-    }
+    showToast(`"${finalTitle}" added to selection • Resolving audio in background...`, 'success');
     setDuplicateConflict(null);
   };
 
@@ -146,7 +141,7 @@ export const SearchTab: React.FC<SearchTabProps> = ({
   return (
     <div className="search-tab animate-fade-in">
       <div style={{ display: 'flex', gap: '16px', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap' }}>
-        <h1 style={{ margin: '0', flexGrow: '1' }}>Discover Content</h1>
+        <h1 style={{ margin: '0', flexGrow: '1' }}>Search & Discover</h1>
         
         {/* Direct Link Resolver Box */}
         <div style={{ display: 'flex', gap: '8px', width: '100%', maxWidth: '400px' }}>
@@ -165,56 +160,54 @@ export const SearchTab: React.FC<SearchTabProps> = ({
       </div>
 
       {/* Main Search Bar */}
-      <div style={{ position: 'relative', marginBottom: '24px' }}>
+      <div style={{ position: 'relative', marginBottom: '20px' }}>
         <input
           type="text"
           className="input"
           style={{ paddingLeft: '44px', fontSize: '16px', height: '48px' }}
-          placeholder="Search songs, artists or videos..."
+          placeholder="Search music..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
         <Search size={20} style={{ position: 'absolute', left: '16px', top: '14px', color: 'var(--text-muted)' }} />
       </div>
 
-      {/* Discovery & Processing notice */}
+      {/* Quick Resolver Notice */}
       <div
         className="card"
         style={{
-          padding: '12px 18px',
-          marginBottom: '24px',
+          padding: '10px 16px',
+          marginBottom: '20px',
           display: 'flex',
           alignItems: 'center',
-          gap: '12px',
+          gap: '10px',
           backgroundColor: 'rgba(204, 255, 0, 0.04)',
           borderColor: 'rgba(204, 255, 0, 0.15)',
         }}
       >
-        <Info size={18} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-        <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: 0 }}>
-          <strong>Discovery Mode:</strong> YouTube results provide metadata and official video preview.
-          To convert a YouTube selection to MP3/WAV/FLAC, attach your corresponding local audio/video file in the Cart or Queue.
-          Direct copyright-free tracks are immediately processable.
-        </p>
+        <Sparkles size={16} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+        <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+          Search and add tracks to your selection. Authorized audio streams are resolved automatically in the background.
+        </span>
       </div>
 
-      {/* Search Status & Warning */}
+      {/* Search Status & Warning if API Key missing */}
       {!settings?.youtubeApiKey && (
         <div 
           className="card" 
           style={{ 
             padding: '12px 18px', 
-            marginBottom: '24px', 
+            marginBottom: '20px', 
             display: 'flex', 
             alignItems: 'center', 
             gap: '12px',
-            backgroundColor: 'rgba(245, 158, 11, 0.1)',
+            backgroundColor: 'rgba(245, 158, 11, 0.08)',
             borderColor: 'rgba(245, 158, 11, 0.2)'
           }}
         >
           <AlertTriangle size={18} style={{ color: 'var(--warning)', flexShrink: 0 }} />
-          <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-            <strong>No YouTube API Key set.</strong> Operating in offline demo mode. Setup your API Key in settings to unlock global YouTube Searches.
+          <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>
+            <strong>Offline Demo Mode:</strong> No YouTube API Key set. Setup your API Key in Settings to search the global YouTube catalog.
           </p>
         </div>
       )}
@@ -259,21 +252,6 @@ export const SearchTab: React.FC<SearchTabProps> = ({
                       {formatDuration(track.duration)}
                     </div>
                   )}
-                  
-                  <span style={{ 
-                    position: 'absolute', 
-                    top: '8px', 
-                    left: '8px', 
-                    fontSize: '10px', 
-                    fontWeight: '700',
-                    backgroundColor: isYouTube ? '#ff0000' : 'var(--accent)',
-                    color: isYouTube ? '#ffffff' : 'var(--bg-deep)',
-                    padding: '2px 6px',
-                    borderRadius: '4px',
-                    textTransform: 'uppercase'
-                  }}>
-                    {isYouTube ? 'YouTube • Preview only' : track.source}
-                  </span>
                 </div>
 
                 {/* Info */}
@@ -299,7 +277,7 @@ export const SearchTab: React.FC<SearchTabProps> = ({
                         title: track.title,
                         artist: track.artist,
                       })}
-                      title="Watch YouTube preview"
+                      title="Watch preview"
                     >
                       <Video size={14} />
                     </button>
@@ -333,7 +311,7 @@ export const SearchTab: React.FC<SearchTabProps> = ({
                       </>
                     ) : (
                       <>
-                        <Plus size={14} /> {isYouTube ? 'Add to Selection' : 'Add'}
+                        <Plus size={14} /> Add
                       </>
                     )}
                   </button>
@@ -438,7 +416,6 @@ export const SearchTab: React.FC<SearchTabProps> = ({
                 className="btn btn-secondary" 
                 style={{ justifyContent: 'flex-start' }}
                 onClick={async () => {
-                  // Replace
                   for (const dup of duplicateConflict.duplicates) {
                     await cartService.removeFromCart(dup.id);
                   }

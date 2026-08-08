@@ -1,5 +1,40 @@
 import Dexie, { type Table } from 'dexie';
 
+export type AudioResolutionStatus =
+  | 'idle'
+  | 'resolving'
+  | 'resolved'
+  | 'ambiguous'
+  | 'unavailable'
+  | 'failed';
+
+export type ProcessingStatus =
+  | 'pending'
+  | 'downloading'
+  | 'preparing'
+  | 'converting'
+  | 'tagging'
+  | 'ready'
+  | 'failed'
+  | 'cancelled';
+
+export interface ResolvedMediaInfo {
+  provider: string;
+  providerItemId?: string;
+  mediaUrl: string;
+  confidence: number;
+  matchedTitle?: string;
+  matchedArtist?: string;
+  matchedDuration?: number;
+  license?: {
+    name?: string;
+    url?: string;
+    verified: boolean;
+  };
+  resolvedAt: number;
+  mediaUrlExpiresAt?: number;
+}
+
 export interface CartItem {
   id: string; // Unique ID (e.g. YouTube video ID or random UUID)
   source: 'youtube' | 'local' | 'direct';
@@ -17,11 +52,38 @@ export interface CartItem {
   addedAt: number;
   outputFormat: 'mp3' | 'mp4' | 'wav' | 'flac' | 'm4a';
   quality: '128' | '192' | '256' | '320';
+  
+  // High-level processing status
   status: 'pending' | 'preparing' | 'processing' | 'tagging' | 'ready' | 'failed' | 'cancelled' | 'source_required';
+  
+  // Separated lifecycle state fields
+  audioResolutionStatus?: AudioResolutionStatus;
+  processingStatus?: ProcessingStatus;
+  resolvedMedia?: ResolvedMediaInfo;
+  userReviewedMatch?: boolean;
+
   allowProcessing?: boolean;
   progress?: number;
   errorMessage?: string;
   fileSizeEstimate?: number; // estimated size in bytes
+}
+
+export interface AudioResolutionEntry {
+  youtubeId: string;
+  provider: string;
+  providerItemId?: string;
+  mediaUrl: string;
+  confidence: number;
+  matchedTitle?: string;
+  matchedArtist?: string;
+  matchedDuration?: number;
+  license?: {
+    name?: string;
+    url?: string;
+    verified: boolean;
+  };
+  resolvedAt: number;
+  mediaUrlExpiresAt?: number;
 }
 
 export interface Playlist {
@@ -52,6 +114,7 @@ export interface AppSettings {
   defaultExportPreset: 'universal' | 'car' | 'dj' | 'hq' | 'small' | 'custom';
   defaultFolderStructure: 'flat' | 'artist' | 'album' | 'genre' | 'playlist';
   concurrencyLimit: number;
+  autoProcessOnResolved?: boolean;
 }
 
 export class MPMusicWebDatabase extends Dexie {
@@ -59,6 +122,7 @@ export class MPMusicWebDatabase extends Dexie {
   playlists!: Table<Playlist, string>;
   history!: Table<HistoryEntry, string>;
   settings!: Table<AppSettings, string>;
+  audioResolutions!: Table<AudioResolutionEntry, string>;
 
   constructor() {
     super('MPMusicWebDB');
@@ -80,7 +144,6 @@ export class MPMusicWebDatabase extends Dexie {
         settings: 'id'
       })
       .upgrade(async (trans) => {
-        // Backfill artistNormalized for existing cart items
         await trans
           .table('cart')
           .toCollection()
@@ -90,13 +153,32 @@ export class MPMusicWebDatabase extends Dexie {
             }
           });
 
-        // Backfill artistNormalized for existing history entries
         await trans
           .table('history')
           .toCollection()
           .modify((entry: HistoryEntry) => {
             if (!entry.artistNormalized) {
               entry.artistNormalized = (entry.artist || '').toLowerCase().trim().replace(/\s+/g, ' ');
+            }
+          });
+      });
+
+    // v3 — add audioResolutions cache table and resolution index
+    this.version(3)
+      .stores({
+        cart: 'id, source, title, artist, artistNormalized, status, audioResolutionStatus, addedAt, genre',
+        playlists: 'id, name, createdAt',
+        history: 'id, title, artist, artistNormalized, processedAt, status',
+        settings: 'id',
+        audioResolutions: 'youtubeId, provider, resolvedAt, confidence'
+      })
+      .upgrade(async (trans) => {
+        await trans
+          .table('cart')
+          .toCollection()
+          .modify((item: CartItem) => {
+            if (!item.audioResolutionStatus) {
+              item.audioResolutionStatus = item.source === 'local' || item.source === 'direct' ? 'resolved' : 'idle';
             }
           });
       });
@@ -116,7 +198,8 @@ export async function initializeSettings() {
       defaultQuality: '320',
       defaultExportPreset: 'universal',
       defaultFolderStructure: 'flat',
-      concurrencyLimit: 2
+      concurrencyLimit: 2,
+      autoProcessOnResolved: false
     });
   }
 }

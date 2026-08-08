@@ -7,7 +7,8 @@ import { mediaRegistry } from '../services/mediaAssetRegistry';
 import { getArtistSummary, normalizeArtist } from '../utils/artistUtils';
 import {
   Trash2, Edit3, Music, CheckSquare, Square, Layers,
-  ArrowRight, X, Play, Search, SlidersHorizontal, Upload
+  ArrowRight, X, Play, Search, SlidersHorizontal, Upload,
+  RefreshCw, CheckCircle2, AlertCircle, HelpCircle, ShieldCheck
 } from 'lucide-react';
 
 type SortKey = 'addedAt_desc' | 'addedAt_asc' | 'title_az' | 'artist_az' | 'duration_asc' | 'duration_desc' | 'status';
@@ -34,6 +35,7 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
   // Selection & bulk operation states
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [editingItem, setEditingItem] = useState<CartItem | null>(null);
+  const [reviewingMatchItem, setReviewingMatchItem] = useState<CartItem | null>(null);
   const [showBulkOptions, setShowBulkOptions] = useState(false);
   const [bulkFormat, setBulkFormat] = useState<'mp3' | 'wav' | 'flac' | 'm4a' | 'mp4'>('mp3');
   const [bulkQuality, setBulkQuality] = useState<'128' | '192' | '256' | '320'>('320');
@@ -182,13 +184,30 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
       const targetItem = items.find((i) => i.id === attachTargetId);
       try {
         await cartService.attachLocalFile(attachTargetId, file);
-        showToast(`Attached "${file.name}" to "${targetItem?.title || 'track'}". Ready to process!`, 'success');
+        showToast(`Attached "${file.name}" to "${targetItem?.title || 'track'}". Audio available!`, 'success');
       } catch {
         showToast('Failed to attach source file.', 'error');
       } finally {
         setAttachTargetId(null);
       }
     }
+  };
+
+  const handleRetryResolution = async (id: string) => {
+    showToast('Searching for authorized audio source...', 'info');
+    await cartService.retryResolution(id);
+  };
+
+  const handleAcceptMatch = async (id: string) => {
+    await cartService.acceptResolutionMatch(id);
+    setReviewingMatchItem(null);
+    showToast('Match accepted. Audio is ready to process!', 'success');
+  };
+
+  const handleRejectMatch = async (id: string) => {
+    await cartService.rejectResolutionMatch(id);
+    setReviewingMatchItem(null);
+    showToast('Match rejected.', 'info');
   };
 
   const saveMetadataEdit = async (e: React.FormEvent) => {
@@ -238,27 +257,28 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
     }
   };
 
-  // Stats from filtered items only (when filtered) or all items
-  const statsItems = activeFilterCount > 0 ? displayItems : items;
-  const stats = useMemo(() => {
-    const totalCount = statsItems.length;
-    const totalDurationSec = statsItems.reduce((acc, item) => acc + (item.duration || 0), 0);
-    const totalBytes = statsItems.reduce((acc, item) => {
-      const rate = parseInt(item.quality || '320', 10);
-      const duration = item.duration || 240;
-      if (item.outputFormat === 'wav') return acc + duration * 176400;
-      if (item.outputFormat === 'flac') return acc + duration * 88200;
-      return acc + (rate * 1000 * duration) / 8;
-    }, 0);
-    const m = Math.floor(totalDurationSec / 60);
-    const h = Math.floor(m / 60);
-    const mRemaining = m % 60;
+  // Resolution statistics
+  const resolutionStats = useMemo(() => {
+    const total = items.length;
+    const resolved = items.filter((i) => i.audioResolutionStatus === 'resolved' || i.source === 'local' || mediaRegistry.hasLocalFile(i.id)).length;
+    const resolving = items.filter((i) => i.audioResolutionStatus === 'resolving').length;
+    const ambiguous = items.filter((i) => i.audioResolutionStatus === 'ambiguous').length;
+    const unavailable = items.filter((i) => i.audioResolutionStatus === 'unavailable' || i.audioResolutionStatus === 'failed').length;
+
     return {
-      totalCount,
-      timeString: h > 0 ? `${h}h ${mRemaining}m` : `${m}m`,
-      sizeString: `${Math.round(totalBytes / 1024 / 1024)} MB`,
+      total,
+      resolved,
+      resolving,
+      ambiguous,
+      unavailable,
     };
-  }, [statsItems]);
+  }, [items]);
+
+  const availableToProcessIds = useMemo(() => {
+    return items
+      .filter((i) => i.audioResolutionStatus === 'resolved' || i.source === 'local' || mediaRegistry.hasLocalFile(i.id))
+      .map((i) => i.id);
+  }, [items]);
 
   const formatSec = (sec: number) => {
     if (!sec) return '0:00';
@@ -267,13 +287,116 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  const statusColor: Record<string, string> = {
-    ready: '#22c55e',
-    failed: '#ef4444',
-    cancelled: '#f59e0b',
-    processing: 'var(--accent)',
-    pending: 'var(--text-muted)',
-    source_required: 'var(--warning)',
+  const renderResolutionBadge = (item: CartItem) => {
+    const isLocal = item.source === 'local' || mediaRegistry.hasLocalFile(item.id);
+    const resStatus = isLocal ? 'resolved' : (item.audioResolutionStatus || 'idle');
+
+    if (resStatus === 'resolving') {
+      return (
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '4px',
+            fontSize: '11px',
+            color: 'var(--accent)',
+            backgroundColor: 'rgba(204, 255, 0, 0.08)',
+            padding: '2px 8px',
+            borderRadius: '4px',
+            fontWeight: '600',
+          }}
+        >
+          <RefreshCw size={11} className="animate-spin" /> Finding audio...
+        </span>
+      );
+    }
+
+    if (resStatus === 'resolved') {
+      return (
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '4px',
+            fontSize: '11px',
+            color: 'var(--success)',
+            backgroundColor: 'rgba(34, 197, 94, 0.1)',
+            padding: '2px 8px',
+            borderRadius: '4px',
+            fontWeight: '600',
+          }}
+          title={item.resolvedMedia ? `Resolved from ${item.resolvedMedia.provider} (${(item.resolvedMedia.confidence * 100).toFixed(0)}% match)` : 'Audio available'}
+        >
+          <CheckCircle2 size={11} /> Audio available ✓
+        </span>
+      );
+    }
+
+    if (resStatus === 'ambiguous') {
+      return (
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px',
+              fontSize: '11px',
+              color: 'var(--warning)',
+              backgroundColor: 'rgba(245, 158, 11, 0.1)',
+              padding: '2px 8px',
+              borderRadius: '4px',
+              fontWeight: '600',
+            }}
+          >
+            <HelpCircle size={11} /> Needs review
+          </span>
+          <button
+            className="btn btn-secondary"
+            style={{ fontSize: '11px', padding: '2px 6px' }}
+            onClick={() => setReviewingMatchItem(item)}
+          >
+            Review match
+          </button>
+        </div>
+      );
+    }
+
+    // Unavailable / Failed / Idle
+    return (
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '4px',
+            fontSize: '11px',
+            color: 'var(--text-muted)',
+            backgroundColor: 'rgba(255, 255, 255, 0.05)',
+            padding: '2px 8px',
+            borderRadius: '4px',
+            fontWeight: '500',
+          }}
+        >
+          <AlertCircle size={11} /> Audio unavailable
+        </span>
+        <button
+          className="btn btn-secondary btn-icon-only"
+          style={{ width: '24px', height: '24px', padding: 0 }}
+          onClick={() => handleRetryResolution(item.id)}
+          title="Retry resolution"
+        >
+          <RefreshCw size={11} />
+        </button>
+        <button
+          className="btn btn-secondary"
+          style={{ fontSize: '11px', padding: '2px 6px', display: 'flex', alignItems: 'center', gap: '4px' }}
+          onClick={() => triggerAttachFile(item.id)}
+          title="Attach local audio file"
+        >
+          <Upload size={11} /> Attach file
+        </button>
+      </div>
+    );
   };
 
   return (
@@ -292,7 +415,7 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
         <div>
           <h1 style={{ margin: 0 }}>My Selection</h1>
           <p style={{ color: 'var(--text-secondary)', margin: '4px 0 0' }}>
-            {items.length} tracks · configure and prepare for processing.
+            {items.length} tracks in selection · {resolutionStats.resolved} ready for processing.
           </p>
         </div>
         {items.length > 0 && (
@@ -326,12 +449,61 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
               </>
             )}
 
-            <button className="btn btn-primary" onClick={() => onNavigate('process')} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              Go to Queue <ArrowRight size={14} />
+            <button
+              className="btn btn-primary"
+              disabled={availableToProcessIds.length === 0}
+              onClick={() => {
+                sessionStorage.setItem('processing_selection_ids', JSON.stringify(availableToProcessIds));
+                onNavigate('process');
+              }}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+            >
+              Process {availableToProcessIds.length} Available <ArrowRight size={14} />
             </button>
           </div>
         )}
       </div>
+
+      {/* Summary Chips Bar */}
+      {items.length > 0 && (
+        <div
+          className="card"
+          style={{
+            padding: '10px 16px',
+            marginBottom: '14px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '12px',
+            backgroundColor: '#0c0c0c',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap', fontSize: '12px' }}>
+            <span style={{ fontWeight: '700', color: 'var(--text-primary)' }}>
+              SELECTION: {resolutionStats.total}
+            </span>
+            <span style={{ color: 'var(--success)' }}>
+              ● {resolutionStats.resolved} Available
+            </span>
+            {resolutionStats.resolving > 0 && (
+              <span style={{ color: 'var(--accent)' }}>
+                ● {resolutionStats.resolving} Searching...
+              </span>
+            )}
+            {resolutionStats.ambiguous > 0 && (
+              <span style={{ color: 'var(--warning)' }}>
+                ● {resolutionStats.ambiguous} Needs Review
+              </span>
+            )}
+            {resolutionStats.unavailable > 0 && (
+              <span style={{ color: 'var(--text-muted)' }}>
+                ● {resolutionStats.unavailable} Unavailable
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Search Bar + Sort selector */}
       {items.length > 0 && (
@@ -366,7 +538,6 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
       {/* Filter panel */}
       {showFilters && (
         <div className="card animate-slide-down" style={{ marginBottom: '12px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px', padding: '12px 14px' }}>
-          {/* Artist filter */}
           <div>
             <label style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'block', marginBottom: '3px' }}>Artist</label>
             <select className="input" value={filterArtist} onChange={(e) => setFilterArtist(e.target.value)}>
@@ -376,7 +547,6 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
               ))}
             </select>
           </div>
-          {/* Format filter */}
           <div>
             <label style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'block', marginBottom: '3px' }}>Format</label>
             <select className="input" value={filterFormat} onChange={(e) => setFilterFormat(e.target.value)}>
@@ -387,7 +557,6 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
               <option value="m4a">M4A</option>
             </select>
           </div>
-          {/* Status filter */}
           <div>
             <label style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'block', marginBottom: '3px' }}>Status</label>
             <select className="input" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
@@ -396,10 +565,8 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
               <option value="ready">Ready</option>
               <option value="source_required">Source Required</option>
               <option value="failed">Failed</option>
-              <option value="cancelled">Cancelled</option>
             </select>
           </div>
-          {/* Source filter */}
           <div>
             <label style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'block', marginBottom: '3px' }}>Source</label>
             <select className="input" value={filterSource} onChange={(e) => setFilterSource(e.target.value)}>
@@ -460,34 +627,13 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
         </div>
       )}
 
-      {/* Active filter chips */}
-      {activeFilterCount > 0 && (
-        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
-          {filterArtist && (
-            <span className="filter-chip">Artist: {artistOptions.find((a) => a.key === filterArtist)?.displayName} <X size={10} style={{ cursor: 'pointer', marginLeft: '3px' }} onClick={() => setFilterArtist('')} /></span>
-          )}
-          {filterFormat && (
-            <span className="filter-chip">Format: {filterFormat.toUpperCase()} <X size={10} style={{ cursor: 'pointer', marginLeft: '3px' }} onClick={() => setFilterFormat('')} /></span>
-          )}
-          {filterStatus && (
-            <span className="filter-chip">Status: {filterStatus} <X size={10} style={{ cursor: 'pointer', marginLeft: '3px' }} onClick={() => setFilterStatus('')} /></span>
-          )}
-          {filterSource && (
-            <span className="filter-chip">Source: {filterSource} <X size={10} style={{ cursor: 'pointer', marginLeft: '3px' }} onClick={() => setFilterSource('')} /></span>
-          )}
-          {search && (
-            <span className="filter-chip">Search: "{search}" <X size={10} style={{ cursor: 'pointer', marginLeft: '3px' }} onClick={() => setSearch('')} /></span>
-          )}
-        </div>
-      )}
-
       {/* Track list */}
       <div style={{ flexGrow: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '16px' }}>
         {items.length === 0 ? (
           <div className="empty-state">
             <Music size={48} className="empty-state-icon" />
-            <div className="empty-state-title">Your Cart is Empty</div>
-            <p>Discover tracks from YouTube or import local music files to start building your collection.</p>
+            <div className="empty-state-title">Your Selection is Empty</div>
+            <p>Search music or import local tracks to start preparing your collection for USB export.</p>
             <button className="btn btn-primary" style={{ marginTop: '16px' }} onClick={() => onNavigate('search')}>
               Discover Tracks
             </button>
@@ -503,8 +649,6 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
         ) : (
           displayItems.map((item) => {
             const isSelected = selectedIds.includes(item.id);
-            const isYouTube = item.source === 'youtube';
-            const isSourceRequired = item.status === 'source_required' || (!item.allowProcessing && !mediaRegistry.hasLocalFile(item.id));
 
             return (
               <div
@@ -551,35 +695,16 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
                         {formatSec(item.duration)}
                       </span>
                     )}
-                    <span style={{
-                      fontSize: '9px', fontWeight: '700', padding: '1px 4px', borderRadius: '3px',
-                      backgroundColor: isYouTube ? '#ff0000' : 'rgba(255,255,255,0.08)',
-                      color: '#ffffff', textTransform: 'uppercase'
-                    }}>
-                      {item.source}
-                    </span>
                   </div>
                 </div>
 
-                {/* Format + Status */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                {/* Resolution Status & Format */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+                  {renderResolutionBadge(item)}
+
                   <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
                     {item.outputFormat.toUpperCase()}
-                    {['mp3', 'm4a'].includes(item.outputFormat) && ` ${item.quality}k`}
                   </span>
-                  <span style={{ fontSize: '10px', color: statusColor[item.status] || 'var(--text-muted)', textTransform: 'uppercase', fontWeight: '600' }}>
-                    {item.status === 'source_required' ? 'Source Required' : item.status}
-                  </span>
-                  {isSourceRequired && (
-                    <button
-                      className="btn btn-secondary"
-                      style={{ fontSize: '11px', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                      onClick={() => triggerAttachFile(item.id)}
-                      title="Attach your local audio file to convert this selection"
-                    >
-                      <Upload size={11} /> Attach file
-                    </button>
-                  )}
                 </div>
 
                 {/* Actions */}
@@ -623,14 +748,90 @@ export const CartTab: React.FC<CartTabProps> = ({ onNavigate, onPlayPreview, sho
               {displayItems.length > 0 && displayItems.every((i) => selectedIds.includes(i.id)) ? 'Deselect All' : `Select All (${displayItems.length})`}
             </button>
             <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-              Showing {stats.totalCount} tracks · ~{stats.timeString} · ~{stats.sizeString}
+              {resolutionStats.resolved} of {resolutionStats.total} tracks ready to convert
             </div>
           </div>
 
           <div style={{ display: 'flex', gap: '8px' }}>
-            <button className="btn btn-primary" onClick={() => onNavigate('process')} style={{ padding: '8px 20px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              Proceed to Queue <ArrowRight size={15} />
+            <button
+              className="btn btn-primary"
+              disabled={availableToProcessIds.length === 0}
+              onClick={() => {
+                sessionStorage.setItem('processing_selection_ids', JSON.stringify(availableToProcessIds));
+                onNavigate('process');
+              }}
+              style={{ padding: '8px 20px', display: 'flex', alignItems: 'center', gap: '6px' }}
+            >
+              Process {availableToProcessIds.length} Available <ArrowRight size={15} />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Match Review Modal */}
+      {reviewingMatchItem && reviewingMatchItem.resolvedMedia && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
+          <div className="card animate-scale-up" style={{ maxWidth: '540px', width: '100%' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <HelpCircle size={18} style={{ color: 'var(--warning)' }} /> Review Audio Match
+              </h3>
+              <button style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }} onClick={() => setReviewingMatchItem(null)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
+              An authorized audio source was found with a confidence score of{' '}
+              <strong style={{ color: 'var(--warning)' }}>{(reviewingMatchItem.resolvedMedia.confidence * 100).toFixed(0)}%</strong>. Please review the comparison before proceeding:
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '20px' }}>
+              {/* Requested YouTube info */}
+              <div style={{ padding: '12px', borderRadius: '6px', backgroundColor: 'var(--bg-hover)', border: '1px solid var(--border-subtle)' }}>
+                <div style={{ fontSize: '11px', fontWeight: '700', color: 'var(--accent)', textTransform: 'uppercase', marginBottom: '8px' }}>
+                  YouTube Track
+                </div>
+                <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '4px' }}>
+                  {reviewingMatchItem.title}
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                  {reviewingMatchItem.artist}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                  Duration: {formatSec(reviewingMatchItem.duration)}
+                </div>
+              </div>
+
+              {/* Matched Source info */}
+              <div style={{ padding: '12px', borderRadius: '6px', backgroundColor: 'var(--bg-hover)', border: '1px solid var(--border-subtle)' }}>
+                <div style={{ fontSize: '11px', fontWeight: '700', color: 'var(--success)', textTransform: 'uppercase', marginBottom: '8px' }}>
+                  Matched Audio Source
+                </div>
+                <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '4px' }}>
+                  {reviewingMatchItem.resolvedMedia.matchedTitle || 'Unknown Title'}
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                  {reviewingMatchItem.resolvedMedia.matchedArtist || 'Unknown Artist'}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginBottom: '4px' }}>
+                  Duration: {formatSec(reviewingMatchItem.resolvedMedia.matchedDuration || 0)}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <ShieldCheck size={12} style={{ color: reviewingMatchItem.resolvedMedia.license?.verified ? 'var(--success)' : 'var(--warning)' }} />
+                  {reviewingMatchItem.resolvedMedia.license?.name || 'Open License'}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => handleRejectMatch(reviewingMatchItem.id)}>
+                Reject Match
+              </button>
+              <button className="btn btn-primary" onClick={() => handleAcceptMatch(reviewingMatchItem.id)}>
+                Accept Match
+              </button>
+            </div>
           </div>
         </div>
       )}

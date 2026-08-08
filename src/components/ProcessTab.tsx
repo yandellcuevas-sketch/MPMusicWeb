@@ -59,10 +59,8 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
     }
   }, [selectedIds, items, onClearSelection]);
 
-  // Determine active scope: whether we are processing a specific subset or all cart items
   const isScoped = Boolean(validSelectedIds && validSelectedIds.length > 0);
 
-  // Items to display and operate on in the current view
   const displayItems = useMemo(() => {
     if (isScoped && validSelectedIds) {
       return items.filter((item) => validSelectedIds.includes(item.id));
@@ -82,7 +80,7 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
 
   const startQueue = async () => {
     if (processableItems.length === 0) {
-      showToast('No processable tracks in selection. Attach a local audio file to YouTube preview tracks first.', 'error');
+      showToast('No processable tracks in selection. Awaiting authorized audio resolution or attached files.', 'error');
       return;
     }
 
@@ -142,7 +140,7 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
     }
   };
 
-  // Queue progress aggregates computed strictly on processable items in current view
+  // Queue progress aggregates
   const queueStats = useMemo(() => {
     const total = displayItems.length;
     const ready = displayItems.filter((i) => i.status === 'ready').length;
@@ -162,7 +160,6 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
     };
   }, [displayItems]);
 
-  // When scoped queue finishes completely, clear sessionStorage to prevent stale scope on next reload
   useEffect(() => {
     if (
       isScoped &&
@@ -197,7 +194,7 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
 
   const getStatusLabel = (item: CartItem) => {
     if (!canProcessItem(item)) {
-      return 'Source file required';
+      return 'Audio match required';
     }
 
     switch (item.status) {
@@ -208,13 +205,13 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
       case 'cancelled':
         return 'Cancelled';
       case 'preparing':
-        return 'Preparing source...';
+        return 'Downloading audio...';
       case 'processing':
         return `Converting ${item.progress ?? 0}%`;
       case 'tagging':
         return 'Tagging ID3...';
       default:
-        return 'Waiting';
+        return 'Ready to convert';
     }
   };
 
@@ -233,7 +230,7 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '16px' }}>
         <div>
           <h1 style={{ margin: '0' }}>Processing Center</h1>
-          <p style={{ color: 'var(--text-secondary)' }}>Transcode audio files and write tags client-side using WebAssembly.</p>
+          <p style={{ color: 'var(--text-secondary)' }}>Transcode authorized audio streams and write tags client-side with FFmpeg.wasm.</p>
         </div>
 
         {displayItems.length > 0 && (
@@ -267,9 +264,9 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
                 className="btn btn-primary"
                 onClick={startQueue}
                 disabled={processableItems.length === 0}
-                title={processableItems.length === 0 ? 'Attach local audio files to preview tracks first' : 'Start conversion queue'}
+                title={processableItems.length === 0 ? 'No processable tracks in selection' : 'Start conversion queue'}
               >
-                <Play size={16} /> {isScoped ? `Process ${processableItems.length} Selected` : `Process ${processableItems.length} Processable`}
+                <Play size={16} /> {isScoped ? `Process ${processableItems.length} Selected` : `Process ${processableItems.length} Available`}
               </button>
             )}
           </div>
@@ -295,7 +292,7 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
               PROCESSING SELECTION ({displayItems.length} tracks)
             </div>
             <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>
-              {processableItems.length} ready to process • {sourceRequiredItems.length} require a source file
+              {processableItems.length} ready to process • {sourceRequiredItems.length} require source or review
             </div>
           </div>
           {onClearSelection && (
@@ -326,8 +323,8 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
         >
           <Info size={18} style={{ color: 'var(--warning)', flexShrink: 0 }} />
           <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-            <strong>{sourceRequiredItems.length} track{sourceRequiredItems.length > 1 ? 's' : ''} require a source file</strong> before they can be processed.
-            Click <em>"Attach file"</em> on any track below to link your local audio or video file.
+            <strong>{sourceRequiredItems.length} track{sourceRequiredItems.length > 1 ? 's' : ''} require an authorized audio match or attached file</strong> before they can be converted.
+            Go to <em>My Selection</em> to review matches or retry resolution.
           </div>
         </div>
       )}
@@ -358,7 +355,7 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
       <div style={{ flexGrow: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
         {displayItems.length > 0 ? (
           displayItems.map((item) => {
-            const needsSource = !canProcessItem(item);
+            const isProcessable = canProcessItem(item);
 
             return (
               <div
@@ -368,8 +365,8 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
                   flexDirection: 'column',
                   padding: '14px 18px',
                   borderRadius: '8px',
-                  backgroundColor: needsSource ? 'rgba(245, 158, 11, 0.03)' : (isScoped ? 'rgba(204,255,0,0.03)' : 'var(--bg-card)'),
-                  border: `1px solid ${needsSource ? 'rgba(245, 158, 11, 0.2)' : (isScoped ? 'rgba(204,255,0,0.18)' : 'var(--border-subtle)')}`,
+                  backgroundColor: !isProcessable ? 'rgba(245, 158, 11, 0.03)' : (isScoped ? 'rgba(204,255,0,0.03)' : 'var(--bg-card)'),
+                  border: `1px solid ${!isProcessable ? 'rgba(245, 158, 11, 0.2)' : (isScoped ? 'rgba(204,255,0,0.18)' : 'var(--border-subtle)')}`,
                   transition: 'border-color 0.2s ease',
                 }}
               >
@@ -382,20 +379,25 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
                     </div>
                     <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
                       {item.artist} • <span style={{ fontWeight: '500' }}>{item.outputFormat.toUpperCase()}</span>
-                      {needsSource && (
+                      {isProcessable && item.resolvedMedia && (
+                        <span style={{ marginLeft: '8px', color: 'var(--success)', fontSize: '11px' }}>
+                          • Matched via {item.resolvedMedia.provider} ({(item.resolvedMedia.confidence * 100).toFixed(0)}%)
+                        </span>
+                      )}
+                      {!isProcessable && (
                         <span style={{ marginLeft: '8px', color: 'var(--warning)', fontSize: '11px' }}>
-                          • Preview Only (Source Required)
+                          • Audio match pending / unavailable
                         </span>
                       )}
                     </div>
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <span style={{ fontSize: '13px', fontWeight: '500', color: needsSource ? 'var(--warning)' : 'var(--text-secondary)' }}>
+                    <span style={{ fontSize: '13px', fontWeight: '500', color: isProcessable ? 'var(--text-secondary)' : 'var(--warning)' }}>
                       {getStatusLabel(item)}
                     </span>
 
-                    {needsSource && (
+                    {!isProcessable && (
                       <button
                         className="btn btn-secondary"
                         style={{ fontSize: '12px', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
@@ -419,7 +421,7 @@ export const ProcessTab: React.FC<ProcessTabProps> = ({
                 </div>
 
                 {/* Progress detail bar for active items */}
-                {['processing', 'preparing'].includes(item.status) && (
+                {['processing', 'preparing', 'tagging'].includes(item.status) && (
                   <div style={{ marginTop: '12px', height: '3px', backgroundColor: 'var(--bg-hover)', borderRadius: '2px', overflow: 'hidden' }}>
                     <div 
                       style={{ 

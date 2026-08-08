@@ -2,6 +2,7 @@ import { db } from '../db/database';
 import type { CartItem } from '../db/database';
 import { mediaRegistry } from './mediaAssetRegistry';
 import { normalizeArtist } from '../utils/artistUtils';
+import { audioResolver } from './audioResolver/AudioResolver';
 
 /**
  * Parses file names to estimate Artist and Title.
@@ -87,7 +88,7 @@ export class CartService {
 
   /**
    * Adds an item to the persistent cart. If it has a local file, registers it in memory.
-   * If allowProcessing is false, sets status to 'source_required'.
+   * If it's a YouTube track, initiates background audio resolution automatically.
    */
   async addToCart(
     itemData: Omit<CartItem, 'addedAt' | 'status' | 'artistNormalized'> & { status?: CartItem['status'] },
@@ -96,32 +97,89 @@ export class CartService {
     const id = itemData.id;
     const addedAt = Date.now();
 
-    const status: CartItem['status'] =
-      itemData.status || (itemData.allowProcessing === false ? 'source_required' : 'pending');
+    const isLocal = itemData.source === 'local' || Boolean(file);
+    const isDirect = itemData.source === 'direct';
+
+    const audioResolutionStatus = isLocal || isDirect ? 'resolved' : 'resolving';
+    const allowProcessing = isLocal || isDirect || itemData.allowProcessing === true;
+    const status: CartItem['status'] = isLocal || isDirect ? 'pending' : 'pending';
 
     const newItem: CartItem = {
       ...itemData,
       artistNormalized: normalizeArtist(itemData.artist),
       addedAt,
       status,
-      allowProcessing: itemData.allowProcessing !== false,
+      audioResolutionStatus,
+      allowProcessing,
     };
 
-    // If file provided, register in memory and ensure it's processable
+    // If local file provided, register in memory
     if (file) {
       mediaRegistry.registerLocalFile(id, file);
       newItem.fileSizeEstimate = file.size;
       newItem.status = 'pending';
+      newItem.audioResolutionStatus = 'resolved';
       newItem.allowProcessing = true;
     }
 
     await db.cart.put(newItem);
+
+    // If it's a YouTube track without local binary, resolve in background
+    if (!isLocal && !isDirect) {
+      // Non-blocking background trigger
+      audioResolver.resolveCartItem(newItem).catch((err) => {
+        console.error('Background audio resolution failed for:', newItem.title, err);
+      });
+    }
+
     return id;
   }
 
   /**
-   * Attaches a real local audio/video file to an existing item (e.g. a YouTube preview-only item).
-   * This upgrades the item to fully processable ('pending').
+   * Retries audio resolution for a cart item.
+   */
+  async retryResolution(id: string): Promise<void> {
+    const item = await db.cart.get(id);
+    if (!item) return;
+
+    await db.cart.update(id, {
+      audioResolutionStatus: 'resolving',
+      errorMessage: undefined,
+    });
+
+    await audioResolver.resolveCartItem(item);
+  }
+
+  /**
+   * Accepts an ambiguous match upon user review.
+   */
+  async acceptResolutionMatch(id: string): Promise<void> {
+    const item = await db.cart.get(id);
+    if (!item || !item.resolvedMedia) return;
+
+    await db.cart.update(id, {
+      audioResolutionStatus: 'resolved',
+      allowProcessing: true,
+      status: 'pending',
+      userReviewedMatch: true,
+    });
+  }
+
+  /**
+   * Rejects an ambiguous match upon user review.
+   */
+  async rejectResolutionMatch(id: string): Promise<void> {
+    await db.cart.update(id, {
+      audioResolutionStatus: 'unavailable',
+      allowProcessing: false,
+      status: 'source_required',
+      userReviewedMatch: false,
+    });
+  }
+
+  /**
+   * Attaches a real local audio/video file to an existing item (e.g. a YouTube track without match).
+   * Upgrades the item to fully processable ('pending').
    */
   async attachLocalFile(id: string, file: File): Promise<void> {
     mediaRegistry.registerLocalFile(id, file);
@@ -129,6 +187,7 @@ export class CartService {
     await db.cart.update(id, {
       source: 'local',
       status: 'pending',
+      audioResolutionStatus: 'resolved',
       allowProcessing: true,
       fileSizeEstimate: file.size,
       duration: duration > 0 ? duration : undefined,

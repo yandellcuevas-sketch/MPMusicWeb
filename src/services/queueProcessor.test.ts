@@ -57,6 +57,16 @@ vi.mock('./metadataService', () => {
   };
 });
 
+// Mock global fetch for remote stream downloading
+global.fetch = vi.fn(async (_url: string) => {
+  return {
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    blob: async () => new Blob(['audio_stream'], { type: 'audio/mpeg' }),
+  } as any;
+});
+
 function createMockItem(
   id: string,
   status: CartItem['status'] = 'pending',
@@ -89,15 +99,21 @@ describe('QueueProcessor', () => {
   });
 
   describe('canProcessItem validation', () => {
-    it('returns false for items with status source_required', () => {
-      const item = createMockItem('sr_1', 'source_required');
-      expect(canProcessItem(item)).toBe(false);
-      expect(processor.canProcess(item)).toBe(false);
-    });
-
-    it('returns false for YouTube items without local file attachment', () => {
+    it('returns false for YouTube items without local file or resolved audio', () => {
       const item = createMockItem('yt_1', 'source_required', 'youtube', false);
       expect(canProcessItem(item)).toBe(false);
+    });
+
+    it('returns true for YouTube items with audioResolutionStatus resolved and mediaUrl', () => {
+      const item = createMockItem('yt_resolved', 'pending', 'youtube', true);
+      item.audioResolutionStatus = 'resolved';
+      item.resolvedMedia = {
+        provider: 'archive_org',
+        mediaUrl: 'https://archive.org/download/item/track.mp3',
+        confidence: 0.95,
+        resolvedAt: Date.now(),
+      };
+      expect(canProcessItem(item)).toBe(true);
     });
 
     it('returns true for local items when binary exists in mediaRegistry', () => {
@@ -122,26 +138,42 @@ describe('QueueProcessor', () => {
 
     await processor.processItem(item);
 
-    expect(db.cart.update).toHaveBeenCalledWith('item_1', { status: 'processing', progress: 0 });
+    expect(db.cart.update).toHaveBeenCalledWith('item_1', {
+      status: 'processing',
+      processingStatus: 'converting',
+      progress: 0,
+    });
     expect(mediaProcessor.convert).toHaveBeenCalledWith(file, 'mp3', '320', expect.any(Function), 'item_1');
-    expect(db.cart.update).toHaveBeenCalledWith('item_1', { status: 'ready', progress: 100 });
+    expect(db.cart.update).toHaveBeenCalledWith('item_1', {
+      status: 'ready',
+      processingStatus: 'ready',
+      progress: 100,
+      errorMessage: undefined,
+    });
     expect(db.history.put).toHaveBeenCalled();
   });
 
-  it('skips preview-only items and does not fail them when processNext runs', async () => {
-    const ytItem = createMockItem('yt_preview', 'source_required', 'youtube', false);
-    const localItem = createMockItem('local_ready', 'pending', 'local', true);
+  it('downloads resolved audio and runs transcode for resolved YouTube tracks', async () => {
+    const ytItem = createMockItem('yt_resolved', 'pending', 'youtube', true);
+    ytItem.audioResolutionStatus = 'resolved';
+    ytItem.resolvedMedia = {
+      provider: 'archive_org',
+      mediaUrl: 'https://archive.org/download/item/spectre.mp3',
+      confidence: 0.95,
+      resolvedAt: Date.now(),
+    };
+    mockCartItems = [ytItem];
 
-    mockCartItems = [ytItem, localItem];
-    mediaRegistry.registerLocalFile('local_ready', new File(['audio'], 'local.mp3'));
+    await processor.processItem(ytItem);
 
-    await processor.startProcessing();
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    // localItem must be processed
-    expect(localItem.status).toBe('ready');
-    // ytItem must remain in source_required status (not failed!)
-    expect(ytItem.status).toBe('source_required');
+    expect(global.fetch).toHaveBeenCalledWith('https://archive.org/download/item/spectre.mp3');
+    expect(mediaProcessor.convert).toHaveBeenCalled();
+    expect(db.cart.update).toHaveBeenCalledWith('yt_resolved', {
+      status: 'ready',
+      processingStatus: 'ready',
+      progress: 100,
+      errorMessage: undefined,
+    });
   });
 
   describe('Scoped Processing Lifecycle & Scope Isolation', () => {
